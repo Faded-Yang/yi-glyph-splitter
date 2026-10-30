@@ -104,6 +104,11 @@ CLI 还会额外写 `page.json`（全部坐标）与 `overlay.png`（整页叠�
     scripts/e2e_app.py   端到端验收（TestClient，30 项检查）
     samples/             示例 tile / 拼版 / 界面截图
 
+## 关于仓库里的 exe
+
+单文件 exe（约 103 MB）不放进 git；用 `packaginguild.ps1` 一条命令重新生成（需要 Python 3.10 + 上面的依赖）。
+包内已含 `tools/` 算法源码与 `app/static` 前端，运行时不读写仓库路径。
+
 ## 环境与依赖
 
 Python 3.10；numpy / opencv-python / scipy / pillow / fastapi / uvicorn / openai。
