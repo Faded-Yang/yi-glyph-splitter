@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>彝文切字工具 · 标注复核</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<svg style="display:none" aria-hidden="true">
+  <symbol id="i-doc" viewBox="0 0 16 16"><path d="M9 1.6H4.4A1.4 1.4 0 0 0 3 3v10a1.4 1.4 0 0 0 1.4 1.4h7.2A1.4 1.4 0 0 0 13 13V5.6L9 1.6Z"/><path d="M9 1.6v4h4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.8 4.3A1.3 1.3 0 0 1 3.1 3h3.1l1.4 1.7h4.3a1.3 1.3 0 0 1 1.3 1.3v6.3a1.3 1.3 0 0 1-1.3 1.3H3.1a1.3 1.3 0 0 1-1.3-1.3V4.3Z"/></symbol>
+  <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.1 12.6 8 5 12.9V3.1Z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 16 16"><path d="M8 1.8 9.5 6.5 14.2 8 9.5 9.5 8 14.2 6.5 9.5 1.8 8 6.5 6.5 8 1.8Z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2v7.4"/><path d="M5 6.6 8 9.6l3-3"/><path d="M2.8 12.2v1.1A1.3 1.3 0 0 0 4.1 14.6h7.8a1.3 1.3 0 0 0 1.3-1.3v-1.1"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.7v1.8M8 12.5v1.8M1.7 8h1.8M12.5 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M12.4 3.6l-1.3 1.3M4.9 11.1l-1.3 1.3"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
+</svg>
+
+<div class="app" id="app">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.2" y="2.6" width="17.6" height="18.8" rx="2.2"/><path d="M8 6.4v11.2M12 6.4v11.2M16 6.4v11.2"/></svg>
+      <div class="brand-text">
+        <b>彝文切字工具</b>
+        <span class="proj" id="projectLabel" title="">未打开项目</span>
+      </div>
+    </div>
+    <div class="topactions">
+      <button class="btn" id="btnImportFiles" title="选择 TIF/TIFF（可多选）"><svg class="ico"><use href="#i-doc"/></svg><span>导入 TIF</span></button>
+      <button class="btn" id="btnImportFolder" title="选择文件夹批量导入"><svg class="ico"><use href="#i-folder"/></svg><span>导入文件夹</span></button>
+      <span class="sep"></span>
+      <button class="btn primary" id="btnProcess" title="对勾选页（或全部页）跑分割，只画框不切图"><svg class="ico"><use href="#i-play"/></svg><span>一键处理</span></button>
+      <button class="btn" id="btnAI" title="调用 DeepSeek 视觉模型给修正建议"><svg class="ico"><use href="#i-spark"/></svg><span>AI 复核</span></button>
+      <button class="btn primary" id="btnExport" title="按当前框导出 tiles + index.csv + sheet.png"><svg class="ico"><use href="#i-download"/></svg><span>一键切图</span></button>
+      <span class="sep"></span>
+      <button class="btn" id="btnSettings" title="设置（AI 凭据 / 导出默认值）"><svg class="ico"><use href="#i-gear"/></svg><span>设置</span></button>
+    </div>
+    <div class="topright">
+      <span class="zoom" id="zoomLabel">100%</span>
+      <span class="save-chip" id="saveChip">未保存</span>
+    </div>
+  </header>
+
+  <div class="jobbar hidden" id="jobbar">
+    <span class="job-kind" id="jobKind">任务</span>
+    <span class="job-msg" id="jobMsg"></span>
+    <div class="job-track"><i id="jobFill"></i></div>
+    <span class="job-count" id="jobCount">0/0</span>
+    <button class="btn tiny" id="jobCancel">取消</button>
+  </div>
+
+  <main class="main">
+    <aside class="sidebar">
+      <div class="side-head"><span>页面</span><span class="muted" id="pageCount">0 页</span></div>
+      <div class="side-tools">
+        <label class="chk"><input type="checkbox" id="chkAll"><span>全选</span></label>
+        <select id="statusFilter" class="mini-sel" title="按状态筛选">
+          <option value="">全部状态</option>
+          <option value="pending">未处理</option>
+          <option value="processed">已处理</option>
+          <option value="reviewing">复核中</option>
+          <option value="done">已完成</option>
+        </select>
+      </div>
+      <ul class="page-list" id="pageList"></ul>
+      <div class="side-foot">
+        <button class="btn tiny" id="btnRemove" disabled>移除选中</button>
+        <span class="muted" id="selPagesTip"></span>
+      </div>
+    </aside>
+
+    <section class="stage">
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="cv"></canvas>
+        <div class="stage-hint" id="stageHint">正在连接后端…</div>
+        <div class="statusbar">
+          <span id="hintBoxes">未选页</span>
+          <span class="dim" id="hintPos">—</span>
+          <span class="legend">
+            <i class="lg normal"></i>普通
+            <i class="lg ok"></i>已确认
+            <i class="lg warn"></i>存疑
+            <i class="lg ai"></i>AI
+            <i class="lg sel"></i>选中
+          </span>
+          <span class="spacer"></span>
+          <button class="btn tiny" id="btnFit" title="适应窗口（F / 双击画布）">适应窗口</button>
+          <button class="btn tiny" id="btnKeys" title="快捷键一览（?）">?</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="inspector">
+      <div class="section">
+        <h3><span>选中框</span><span class="muted" id="selIndexHint"></span></h3>
+        <div class="sel-empty" id="selEmpty">
+          <div class="detail-ph"><div>3x 细节图<br><span class="dim">选中一个框后显示（含上下邻框上下文）</span></div></div>
+          <div>未选中框 · 点画布上的框，或按 A 新建，← → 切换框</div>
+        </div>
+        <div id="selBody" class="hidden">
+          <div class="detail" id="detailWrap">
+            <div class="detail-inner">
+              <img id="detailImg" alt="选中框细节">
+              <div class="detail-ov" id="detailOv"></div>
+            </div>
+          </div>
+          <div class="fields">
+            <label>X0<input id="inX0" type="number" step="1" min="0"></label>
+            <label>Y0<input id="inY0" type="number" step="1" min="0"></label>
+            <label>X1<input id="inX1" type="number" step="1" min="0"></label>
+            <label>Y1<input id="inY1" type="number" step="1" min="0"></label>
+          </div>
+          <div class="selmeta">
+            <span class="pill" id="selReview">未复核</span>
+            <span class="dim" id="selSize">—</span>
+            <span class="dim" id="selFlags"></span>
+          </div>
+          <div class="note-row"><label>备注<input id="inNote" type="text" placeholder="可选，随框保存" maxlength="120"></label></div>
+          <div class="acts">
+            <button class="btn ok" id="btnConfirm" title="确认（1）">确认</button>
+            <button class="btn warn" id="btnSuspect" title="存疑（2）">存疑</button>
+            <button class="btn" id="btnReset" title="复位（0）">复位</button>
+            <button class="btn" id="btnSplit" title="以鼠标 y 拆分（S）">拆分</button>
+            <button class="btn" id="btnMergeNext" title="与下框合并（M）">合并下</button>
+            <button class="btn" id="btnMergePrev" title="与上框合并（Shift+M）">合并上</button>
+            <button class="btn" id="btnAdd" title="新建框：在画布上拖框（A）">添加</button>
+            <button class="btn danger" id="btnDelete" title="删除（Del）">删除</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3><span>AI 建议</span><span class="muted" id="aiCount"></span></h3>
+        <div class="ai-headrow">
+          <button class="btn tiny" id="btnAiAll">全部接受</button>
+          <button class="btn tiny" id="btnAiRefresh">刷新</button>
+        </div>
+        <div class="ai-list" id="aiList"></div>
+      </div>
+
+      <div class="section">
+        <h3>本页</h3>
+        <div id="pageInfo" class="pageinfo"></div>
+        <div class="acts two">
+          <button class="btn" id="btnProcessOne">处理本页</button>
+          <button class="btn" id="btnAiOne">AI 复核本页</button>
+          <button class="btn" id="btnExportOne">切图本页</button>
+          <button class="btn" id="btnReload">重新载入</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<!-- 设置抽屉 -->
+<div class="mask" id="drawerMask"></div>
+<aside class="drawer" id="drawer" aria-label="设置">
+  <div class="drawer-head">
+    <b>设置</b>
+    <button class="icon-btn" id="btnCloseDrawer" title="关闭（Esc）"><svg class="ico"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="drawer-body">
+    <div class="group-title">AI 复核（DeepSeek）<span class="chip warn" id="aiStatus">AI 未配置</span></div>
+    <label class="field">API Key<input id="setKey" type="password" autocomplete="off" placeholder="未设置 API Key"></label>
+    <label class="field">Base URL<input id="setBase" type="text" placeholder="https://api.deepseek.com"></label>
+    <div class="field-row">
+      <label class="field">模型<input id="setModel" type="text" placeholder="deepseek-flash"></label>
+      <label class="field narrow">并发<input id="setWorkers" type="number" min="1" max="16" step="1"></label>
+    </div>
+    <div class="row-btns">
+      <button class="btn" id="btnTestAI">测试连接</button>
+      <span class="testmsg" id="aiTestMsg"></span>
+    </div>
+
+    <div class="group-title">导出默认值</div>
+    <div class="field-row">
+      <label class="field">留白比例<input id="setPad" type="number" min="0" max="0.5" step="0.01"></label>
+      <label class="field">最小留白 px<input id="setMinPad" type="number" min="0" max="50" step="1"></label>
+    </div>
+    <div class="field-row">
+      <label class="field">编号顺序<select id="setOrder"><option value="visual">visual（视觉顺序）</option><option value="reading">reading（阅读顺序）</option><option value="id">id（按框 id）</option></select></label>
+      <label class="field">图片格式<select id="setFmt"><option value="png">png</option><option value="jpg">jpg</option><option value="webp">webp</option></select></label>
+    </div>
+
+    <div class="group-title">项目</div>
+    <label class="field">项目目录<input id="setProjectPath" type="text" placeholder="C:\项目目录"></label>
+    <div class="row-btns"><button class="btn" id="btnOpenProject">打开项目</button></div>
+
+    <div class="row-btns sticky">
+      <button class="btn primary" id="btnSaveSettings">保存设置</button>
+    </div>
+  </div>
+</aside>
+
+<!-- 弹层 -->
+<div class="mask" id="modalMask"></div>
+
+<div class="dlg" id="dlgExport" role="dialog" aria-label="一键切图">
+  <div class="dlg-head"><b>一键切图</b><button class="icon-btn" id="btnExportCancel" title="取消"><svg class="ico"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-body">
+    <label class="field">输出目录<span class="dim">（留空用项目默认 exports）</span>
+      <span class="inline"><input id="exOut" type="text" placeholder="留空 = 项目目录/exports"><button class="btn tiny" id="btnChooseOut">选择…</button></span>
+    </label>
+    <div class="field-row">
+      <label class="field">留白比例<input id="exPad" type="number" min="0" max="0.5" step="0.01"></label>
+      <label class="field">最小留白 px<input id="exMin" type="number" min="0" max="50" step="1"></label>
+    </div>
+    <div class="field-row">
+      <label class="field">编号顺序<select id="exOrder"><option value="visual">visual</option><option value="reading">reading</option><option value="id">id</option></select></label>
+      <label class="field">图片格式<select id="exFmt"><option value="png">png</option><option value="jpg">jpg</option><option value="webp">webp</option></select></label>
+    </div>
+    <label class="field">导出范围<select id="exScope"><option value="current">当前页</option><option value="checked">勾选的页</option><option value="all">全部页</option></select></label>
+  </div>
+  <div class="dlg-foot"><button class="btn" id="btnExportCancel2">取消</button><button class="btn primary" id="btnExportGo">开始导出</button></div>
+</div>
+
+<div class="dlg" id="dlgAI" role="dialog" aria-label="AI 复核">
+  <div class="dlg-head"><b>AI 复核</b><button class="icon-btn" id="btnAiCancel" title="取消"><svg class="ico"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-body">
+    <p class="hint">AI 只生成「建议」，不改框；生成后在右栏逐条接受或拒绝。</p>
+    <label class="field">框范围<select id="aiScope"><option value="suspect">可疑框（存疑 / 未复核）</option><option value="all">全部框</option><option value="selected">仅当前选中的框</option></select></label>
+    <label class="field">修正模式<select id="aiMode"><option value="auto">auto（让模型判断）</option><option value="tighten">tighten（只收紧）</option><option value="split">split（只拆分）</option></select></label>
+    <label class="field">页面范围<select id="aiPages"><option value="current">当前页</option><option value="checked">勾选的页</option><option value="all">全部页</option></select></label>
+  </div>
+  <div class="dlg-foot"><button class="btn" id="btnAiCancel2">取消</button><button class="btn primary" id="btnAiGo">开始复核</button></div>
+</div>
+
+<div class="dlg" id="dlgConfirm" role="dialog" aria-label="确认">
+  <div class="dlg-head"><b id="confirmTitle">确认</b><button class="icon-btn" id="btnConfirmCancel" title="取消"><svg class="ico"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-body"><p id="confirmText" class="confirm-text"></p></div>
+  <div class="dlg-foot"><button class="btn" id="btnConfirmCancel2">取消</button><button class="btn primary" id="btnConfirmOk">确定</button></div>
+</div>
+
+<div class="dlg wide" id="dlgKeys" role="dialog" aria-label="快捷键">
+  <div class="dlg-head"><b>快捷键</b><button class="icon-btn" id="btnKeysClose" title="关闭"><svg class="ico"><use href="#i-x"/></svg></button></div>
+  <div class="dlg-body keys">
+    <div class="krow"><kbd>A</kbd><span>新建框（在画布上拖出矩形）</span></div>
+    <div class="krow"><kbd>Del</kbd><span>删除选中框</span></div>
+    <div class="krow"><kbd>S</kbd><span>以鼠标 y 为界把选中框拆成上下两个</span></div>
+    <div class="krow"><kbd>M</kbd><span>与下一框合并</span></div>
+    <div class="krow"><kbd>Shift</kbd><kbd>M</kbd><span>与上一框合并</span></div>
+    <div class="krow"><kbd>1</kbd><span>确认选中框</span></div>
+    <div class="krow"><kbd>2</kbd><span>标记存疑</span></div>
+    <div class="krow"><kbd>0</kbd><span>复位为未复核</span></div>
+    <div class="krow"><kbd>←</kbd><kbd>→</kbd><span>上一个 / 下一个框</span></div>
+    <div class="krow"><kbd>Ctrl</kbd><kbd>Z</kbd><span>撤销（保留 50 步）</span></div>
+    <div class="krow"><kbd>Ctrl</kbd><kbd>Shift</kbd><kbd>Z</kbd><span>重做</span></div>
+    <div class="krow"><kbd>Ctrl</kbd><kbd>S</kbd><span>立即保存</span></div>
+    <div class="krow"><kbd>滚轮</kbd><span>以鼠标为中心缩放（0.2x – 5x）</span></div>
+    <div class="krow"><kbd>空格</kbd><kbd>拖动</kbd><span>平移画布（或鼠标中键拖动）</span></div>
+    <div class="krow"><kbd>F</kbd><span>适应窗口</span></div>
+    <div class="krow"><kbd>Esc</kbd><span>取消新建 / 回到默认状态</span></div>
+  </div>
+  <div class="dlg-foot"><button class="btn primary" id="btnKeysClose2">知道了</button></div>
+</div>
+
+<script src="./api.js"></script>
+<script src="./canvas.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

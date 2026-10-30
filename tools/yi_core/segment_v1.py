@@ -1,0 +1,591 @@
+"""segment_v1 -- main Yi-script glyph segmentation.
+
+PIPELINE
+  1. illumination flatten  (large box blur / division) -> even paper, ink stays black
+  2. Sauvola binarisation  (integral-image mean/std, window ~ 1 glyph)
+  3. component filtering   (area, darkness, bbox size) -> dust / stains / ghost ink / frames
+  4. horizontal blocks     (blank row corridors split the page: body vs marginalia)
+  5. column bands per block (close the mask vertically -> solid bars -> x-profile peaks)
+  6. per-column DP cut     (row ink profile + glyph-height prior; cut cost = ink crossed)
+  7. fragment merge        (detached dots / broken strokes glued back to their body)
+  8. bbox from real ink    (tight box of the assigned components) + filtering + reading order
+
+All geometry parameters are declared at FULL resolution and scaled by 'base_scale'.
+"""
+from __future__ import annotations
+
+import copy
+from dataclasses import dataclass
+
+import cv2
+import numpy as np
+
+from . import common as C
+
+
+@dataclass
+class Params:
+    # --- preprocessing (full-res pixel units) ---------------------------------
+    flatten_ksize: int = 201
+    sauvola_win: int = 81
+    sauvola_k: float = 0.30
+    dark_thr: int = 110          # flattened value below which a pixel counts as real ink
+    min_comp_area: int = 90      # px (full-res)
+    dark_frac_min: float = 0.28  # fraction of dark pixels inside a component
+    border_frac: float = 0.008   # ignore ink closer than this to the page edge
+    max_comp_side: float = 1.75  # drop components with bbox side > this * glyph width
+    max_comp_area: float = 6.0   # drop components with area > this * glyph_width^2
+    rule_len_ratio: float = 3.0  # drop thin components longer than this * glyph width
+    # --- horizontal blocks ---------------------------------------------------
+    block_gap_frac: float = 0.85  # blank row corridor (>= this * glyph height) splits blocks
+    block_min_ink: float = 0.0005  # ignore blocks with less ink than this * page area
+    # --- column detection ----------------------------------------------------
+    col_valley_frac: float = 0.40  # valley below this * weaker peak -> real corridor
+    min_col_w_ratio: float = 0.25  # min band width as fraction of the median band width
+    col_merge_frac: float = 0.28   # bands whose centres differ less than this * gw are one column
+    # --- per-column DP -------------------------------------------------------
+    shape_w: float = 8.0         # weight of (log(h/H))^2 shape penalty
+    cut_base: float = 0.9        # fixed cost of every cut (prevents over-splitting)
+    cut_w: float = 2.0           # extra cost proportional to the ink crossed by the cut
+    min_h_frac: float = 0.45     # DP search bounds
+    max_h_frac: float = 2.10
+    h_refine: bool = True        # re-run DP with the median segment height
+    h_consensus: bool = True     # clamp each column's H to the page-wide glyph height
+    h_consensus_lo: float = 0.72
+    h_consensus_hi: float = 1.35
+    # --- fragments / filtering ----------------------------------------------
+    frag_merge_frac: float = 0.45
+    frag_gap_frac: float = 0.55
+    min_ink_frac: float = 0.05   # drop glyphs with ink < this * median glyph ink
+    ink_frac_max: float = 0.55   # drop "glyphs" whose ink fills more of the box (stain blob)
+    flat_veto: float = 110.0     # drop glyphs whose ink is not dark on the flattened image
+    core_frac_min: float = 0.15  # drop glyphs with almost no really-dark pixels
+    core_thr: float = 60.0       # "really dark" on the flattened image
+    # --- post-split: boxes that still hold two glyphs -------------------------
+    post_split: bool = True
+    ps_h_ratio: float = 1.45     # only try a row split when h > ratio * H
+    ps_gap_frac: float = 0.15    # blank band must be at least this * box extent
+    ps_part_frac: float = 0.48   # each part must be at least this * H
+    ps_w_ratio: float = 1.55     # column split when w > ratio * h
+    bbox_clip: float = 0.45      # clip a glyph bbox to band +- this * band width
+    # --- misc ---------------------------------------------------------------
+    verbose: bool = False
+
+
+# --------------------------------------------------------------- small utils
+def _odd(v) -> int:
+    v = int(round(v))
+    return v if v % 2 else v + 1
+
+
+def _scaled(p: Params, s: float) -> Params:
+    q = copy.deepcopy(p)
+    for name in ("flatten_ksize", "sauvola_win", "min_comp_area"):
+        setattr(q, name, max(1, int(round(getattr(p, name) * s))))
+    q.flatten_ksize = _odd(q.flatten_ksize)
+    q.sauvola_win = _odd(q.sauvola_win)
+    return q
+
+
+def _prep(img: np.ndarray, p: Params):
+    flat = C.flatten_illumination(img, _odd(p.flatten_ksize))
+    mask = C.binarize(flat, "sauvola", win=_odd(p.sauvola_win), k=p.sauvola_k)
+    return flat, mask
+
+
+# ------------------------------------------------------------ components
+def _component_stats(mask: np.ndarray, flat: np.ndarray, p: Params):
+    n, lab, stats, cent = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return (lab, stats, cent, np.zeros(1, np.int64), np.zeros(1, np.float32),
+                np.zeros(1, np.float32))
+    areas = stats[:, cv2.CC_STAT_AREA].astype(np.int64)
+    cnt = np.bincount(lab[flat < p.dark_thr], minlength=n).astype(np.int64)
+    dark_frac = cnt.astype(np.float32) / np.maximum(areas, 1)
+    m = mask.astype(bool)
+    fsum = np.bincount(lab[m], weights=flat[m].astype(np.float64), minlength=n)
+    flat_mean = (fsum / np.maximum(areas, 1)).astype(np.float32)
+    return lab, stats, cent, areas, dark_frac, flat_mean
+
+
+def _component_keep(stats, areas, dark_frac, p: Params, glyph_w: float):
+    """Keep only components that could be (part of) a glyph stroke."""
+    n = len(areas)
+    keep = np.zeros(n, dtype=bool)
+    gw = max(glyph_w, 1.0)
+    max_side = p.max_comp_side * gw
+    max_area = p.max_comp_area * gw * gw
+    rule_side = p.rule_len_ratio * gw
+    for i in range(1, n):
+        a = areas[i]
+        if a < p.min_comp_area or a > max_area:
+            continue
+        if dark_frac[i] < p.dark_frac_min:
+            continue
+        w = stats[i, cv2.CC_STAT_WIDTH]
+        h = stats[i, cv2.CC_STAT_HEIGHT]
+        fill = a / float(w * h)
+        if max(w, h) > max_side and fill < 0.30:
+            continue
+        if max(w, h) > rule_side and fill < 0.25:
+            continue
+        keep[i] = True
+    return keep
+
+
+def _estimate_glyph_w(mask: np.ndarray):
+    """Column pitch (= glyph cell width) from the x-profile autocorrelation."""
+    prof = C.col_profile(mask).astype(np.float32)
+    prof = prof - prof.mean()
+    n = len(prof)
+    if n < 64:
+        return max(64.0, n / 8.0)
+    F = np.fft.rfft(prof, n=2 * n)
+    ac = np.fft.irfft(F * np.conj(F))[:n]
+    ac[0] = 0
+    lo = max(8, int(n * 0.01))
+    hi = max(lo + 4, int(n * 0.12))
+    if hi <= lo + 2:
+        return max(64.0, n / 16.0)
+    return float(lo + int(np.argmax(ac[lo:hi])))
+
+
+# ------------------------------------------------------------ blocks
+def _runs(mask1d: np.ndarray):
+    return C.runs(mask1d)
+
+
+def _split_blocks(mask: np.ndarray, glyph_w: float, p: Params):
+    """Split the page into horizontal blocks separated by blank corridors."""
+    rp = C.row_profile(mask) > 0
+    blanks = _runs(~rp)
+    min_gap = max(8, int(round(p.block_gap_frac * 0.75 * glyph_w)))
+    cuts = [0]
+    for a, b in blanks:
+        lon = b - a + 1
+        thr = min_gap if (a > 0 and b < len(rp) - 1) else 1
+        if lon >= thr and a > 0:
+            cuts.append(int((a + b) // 2))
+    cuts.append(mask.shape[0])
+    blocks = []
+    for i in range(len(cuts) - 1):
+        y0, y1 = cuts[i], cuts[i + 1]
+        if y1 - y0 < max(8, 0.25 * glyph_w):
+            continue
+        sub = mask[y0:y1]
+        if sub.mean() < p.block_min_ink:
+            continue
+        blocks.append((y0, y1))
+    return blocks
+
+
+# ------------------------------------------------------------ columns
+def _find_columns(mask: np.ndarray, p: Params, glyph_w: float):
+    """Column bands of one block: close along y, then peak-pick the x-profile."""
+    kh = max(3, int(round(0.95 * glyph_w)))
+    closed = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE,
+                              np.ones((kh, 1), np.uint8))
+    prof = C.col_profile(closed > 0).astype(np.float32)
+    sm = C.smooth1d(prof, max(3, int(glyph_w * 0.20) | 1))
+    if sm.max() <= 0:
+        return []
+    try:
+        from scipy.signal import find_peaks
+        peaks, _ = find_peaks(sm, distance=max(4, int(glyph_w * 0.55)),
+                              prominence=0.20 * float(sm.max()))
+        peaks = np.asarray(peaks, dtype=np.int64)
+        if peaks.size < 2:
+            raise RuntimeError
+    except Exception:
+        thr = max(3.0, sm.max() * 0.05)
+        peaks = np.array([int((a + b) / 2) for a, b in _runs(sm > thr)], dtype=np.int64)
+    if peaks.size == 0:
+        return []
+    w_page = len(sm)
+    cuts = [0]
+    for i in range(len(peaks) - 1):
+        a, b = int(peaks[i]), int(peaks[i + 1])
+        seg = sm[a:b + 1]
+        v = float(seg.min())
+        if v <= p.col_valley_frac * min(float(sm[a]), float(sm[b])):
+            cuts.append(a + int(np.argmin(seg)))
+    cuts.append(w_page)
+    bands = [(int(cuts[i]), int(cuts[i + 1])) for i in range(len(cuts) - 1)]
+    bands = [(a, b) for a, b in bands if b - a >= max(8, 0.12 * glyph_w)]
+    if not bands:
+        return []
+    return bands
+
+
+# ------------------------------------------------------------ per-column DP
+def _estimate_H(prof: np.ndarray, glyph_w: float) -> float:
+    sm = C.smooth1d(prof, 5)
+    thr = max(1.0, 0.05 * float(prof.max()) if prof.size else 1.0)
+    bh = np.array([b - a + 1 for a, b in _runs(sm > thr)], dtype=np.float32)
+    H = float(np.median(bh)) * 1.25 if bh.size >= 3 else glyph_w * 0.55
+    return float(np.clip(H, glyph_w * 0.35, glyph_w * 0.95))
+
+
+def _dp_cuts(prof: np.ndarray, height: int, H: float, p: Params):
+    """Partition rows [0,height) into glyph rows (vectorised DP)."""
+    ps = C.smooth1d(prof.astype(np.float32), 3)
+    nz = ps[ps > 0]
+    ref = max(float(np.percentile(nz, 75)) if nz.size else 1.0, 1.0)
+    lo = max(1, int(H * p.min_h_frac))
+    hi = max(lo + 2, int(H * p.max_h_frac))
+    cand = [0]
+    cand.extend([y for y in range(1, height - 1)
+                 if ps[y] <= ps[y - 1] and ps[y] <= ps[y + 1]])
+    cand.append(height)
+    cand = np.unique(np.asarray(cand, dtype=np.int64))
+    k = len(cand)
+    logc = np.log(np.maximum(cand, 1).astype(np.float64))
+    cut_pen = p.cut_w * (ps[np.clip(cand, 0, len(ps) - 1)] / ref)
+    INF = 1e18
+    dp = np.full(k, INF)
+    back = np.zeros(k, dtype=np.int32)
+    dp[0] = 0.0
+    for j in range(1, k):
+        yj = cand[j]
+        ilo = int(np.searchsorted(cand, yj - hi, "left"))
+        ihi = int(np.searchsorted(cand, yj - lo, "right"))
+        ihi = min(ihi, j)
+        if ihi <= ilo:
+            continue
+        ii = np.arange(ilo, ihi)
+        lr = logc[j] - logc[ii]
+        cost = dp[ii] + p.shape_w * lr * lr
+        m = int(np.argmin(cost))
+        if cost[m] >= INF:
+            continue
+        dp[j] = cost[m] + (0.0 if j == k - 1 else (p.cut_base + cut_pen[j]))
+        back[j] = ii[m]
+    if dp[k - 1] >= INF:
+        cuts = [0]
+        y = H
+        while y < height - 1:
+            cuts.append(int(round(y)))
+            y += H
+        cuts.append(height)
+        return cuts
+    cuts = [int(cand[k - 1])]
+    j = k - 1
+    while j > 0:
+        j = int(back[j])
+        cuts.append(int(cand[j]))
+    cuts.reverse()
+    return cuts
+
+
+def _segment_column(prof, comps, cbox, areas, cflat, H, p: Params, height: int):
+    """DP-cut one column and return merged segment boxes (rows relative to block)."""
+    cuts = _dp_cuts(prof, height, H, p)
+    if p.h_refine:
+        hts = np.diff(np.asarray(cuts, dtype=np.float64))
+        hts = hts[hts > 0]
+        if hts.size >= 3:
+            H2 = float(np.median(hts))
+            if 0.6 * H <= H2 <= 1.6 * H:
+                H = H2
+                cuts = _dp_cuts(prof, height, H, p)
+    seg_comp = {}
+    for c in comps:
+        j = int(np.searchsorted(cuts, c[1], side="right") - 1)
+        j = min(max(j, 0), len(cuts) - 2)
+        seg_comp.setdefault(j, []).append(c[0])
+    segs = []
+    for j, cs in seg_comp.items():
+        x0 = int(min(cbox[c, 0] for c in cs)); y0 = int(min(cbox[c, 1] for c in cs))
+        x1 = int(max(cbox[c, 0] + cbox[c, 2] for c in cs))
+        y1 = int(max(cbox[c, 1] + cbox[c, 3] for c in cs))
+        ink = int(sum(areas[c] for c in cs))
+        fm = float(np.average(cflat[cs], weights=np.maximum(areas[cs], 1)))
+        segs.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1,
+                     "ink": ink, "flat": fm, "comps": cs})
+    segs.sort(key=lambda d: d["y0"])
+    merged = []
+    for sg in segs:
+        if merged:
+            prev = merged[-1]
+            gap = sg["y0"] - prev["y1"]
+            hh = sg["y1"] - sg["y0"]
+            hpre = prev["y1"] - prev["y0"]
+            ov = min(prev["x1"], sg["x1"]) - max(prev["x0"], sg["x0"])
+            ovr = ov / float(max(1, min(prev["x1"] - prev["x0"], sg["x1"] - sg["x0"])))
+            if min(hh, hpre) < p.frag_merge_frac * H and gap <= p.frag_gap_frac * H \
+                    and ovr > 0.15:
+                prev["x0"] = min(prev["x0"], sg["x0"])
+                prev["y0"] = min(prev["y0"], sg["y0"])
+                prev["x1"] = max(prev["x1"], sg["x1"])
+                prev["y1"] = max(prev["y1"], sg["y1"])
+                tot = prev["ink"] + sg["ink"]
+                prev["flat"] = (prev["flat"] * prev["ink"] + sg["flat"] * sg["ink"]) / max(tot, 1)
+                prev["ink"] = tot
+                prev["comps"].extend(sg["comps"])
+                continue
+        merged.append(sg)
+    return merged, H
+
+
+def _post_split(box, mask: np.ndarray, H: float, p: Params):
+    """Split a box that still contains two glyphs (the DP only cuts along rows).
+
+    A cut is accepted only where the ink mask has a genuinely empty band and
+    both resulting parts are at least ps_part_frac * H tall (or wide).
+    """
+    if not p.post_split or H <= 2:
+        return [box]
+    queue = [tuple(int(v) for v in box)]
+    out = []
+    guard = 0
+    while queue and guard < 40:
+        guard += 1
+        x0, y0, x1, y1 = queue.pop()
+        hh, ww = y1 - y0, x1 - x0
+        if hh < 6 or ww < 6:
+            out.append((x0, y0, x1, y1))
+            continue
+        sub = mask[y0:y1, x0:x1]
+        did = False
+        if hh > p.ps_h_ratio * H:
+            rp = sub.sum(axis=1)
+            for a, b in _runs(rp == 0):
+                if b - a + 1 < max(2, p.ps_gap_frac * hh):
+                    continue
+                if a >= p.ps_part_frac * H and (hh - 1 - b) >= p.ps_part_frac * H:
+                    cut = (a + b) // 2
+                    queue.append((x0, y0, x1, y0 + cut))
+                    queue.append((x0, y0 + cut, x1, y1))
+                    did = True
+                    break
+        if did:
+            continue
+        if ww > p.ps_w_ratio * hh and ww > p.ps_w_ratio * H:
+            cp = sub.sum(axis=0)
+            for a, b in _runs(cp == 0):
+                if b - a + 1 < max(2, p.ps_gap_frac * ww):
+                    continue
+                if a >= p.ps_part_frac * H and (ww - 1 - b) >= p.ps_part_frac * H:
+                    cut = (a + b) // 2
+                    queue.append((x0, y0, x0 + cut, y1))
+                    queue.append((x0 + cut, y0, x1, y1))
+                    did = True
+                    break
+        if not did:
+            out.append((x0, y0, x1, y1))
+    return out
+
+
+# ------------------------------------------------------------------ main
+def segment_page(gray: np.ndarray, *, base_scale: float = 1.0, params: Params | None = None,
+                 debug: dict | None = None) -> dict:
+    """Segment one page.  Coordinates in the result are in gray's pixel space."""
+    p = Params() if params is None else params
+    s = float(base_scale)
+    if s != 1.0:
+        p = _scaled(p, s)
+    h, w = gray.shape[:2]
+
+    flat, mask = _prep(gray, p)
+    bm = int(round(min(h, w) * p.border_frac))
+    if bm > 0:
+        mask[:bm, :] = False
+        mask[-bm:, :] = False
+        mask[:, :bm] = False
+        mask[:, -bm:] = False
+
+    lab, stats, cent, areas, dark_frac, cflat = _component_stats(mask, flat, p)
+    glyph_w = _estimate_glyph_w(mask)
+    keep = _component_keep(stats, areas, dark_frac, p, glyph_w)
+    keep[0] = False
+    mask2 = np.zeros((h, w), np.uint8)
+    lut = np.zeros(len(keep), np.uint8)
+    lut[keep] = 1
+    mask2 = lut[lab]
+    ids = np.flatnonzero(keep)
+
+    cbox = stats[:, [cv2.CC_STAT_LEFT, cv2.CC_STAT_TOP,
+                     cv2.CC_STAT_WIDTH, cv2.CC_STAT_HEIGHT]].astype(np.int64)
+    ccy = cbox[:, 1] + cbox[:, 3] / 2.0
+    ccx = cbox[:, 0] + cbox[:, 2] / 2.0
+
+    blocks = _split_blocks(mask2 > 0, glyph_w, p)
+
+    # ---- collect every (block, column band) work item ----------------------
+    work = []
+    band_list = []
+    block_info = []
+    for (by0, by1) in blocks:
+        sub = mask2[by0:by1]
+        bands = _find_columns(sub > 0, p, glyph_w)
+        if not bands:
+            continue
+        kept = []
+        for (bx0, bx1) in bands:
+            pad_x = int(round(0.10 * (bx1 - bx0 + 1)))
+            sx0 = max(0, bx0 - pad_x)
+            sx1 = min(w, bx1 + pad_x + 1)
+            sel = ids[(ccx[ids] >= sx0) & (ccx[ids] < sx1) &
+                      (ccy[ids] >= by0) & (ccy[ids] < by1)]
+            if sel.size == 0:
+                continue
+            pm = np.zeros((by1 - by0, sx1 - sx0), np.uint8)
+            loc = lab[by0:by1, sx0:sx1]
+            sub_lut = np.zeros(len(keep), np.uint8)
+            sub_lut[sel] = 1
+            pm[sub_lut[loc] > 0] = 1
+            prof = pm.sum(axis=1).astype(np.float32)
+            if prof.max() <= 0:
+                continue
+            work.append({"by0": int(by0), "by1": int(by1),
+                         "bx0": int(bx0), "bx1": int(bx1),
+                         "prof": prof,
+                         "comps": [(int(c), float(ccy[c]) - by0) for c in sel],
+                         "H": _estimate_H(prof, glyph_w)})
+            kept.append((int(bx0), int(bx1)))
+            band_list.append((int(bx0), int(bx1)))
+        block_info.append({"y0": int(by0), "y1": int(by1), "n_cols": len(kept)})
+
+    # ---- pass 1: segment with the per-column height guess ------------------
+    for it in work:
+        it["segs"], it["H_used"] = _segment_column(
+            it["prof"], it["comps"], cbox, areas, cflat, it["H"], p, it["by1"] - it["by0"])
+
+    # ---- pass 2: one page-wide glyph height, then re-segment outliers ------
+    # Handwriting keeps a stable glyph height per page; a column whose local
+    # estimate is an outlier (sparse marginalia, dense stains) is the main
+    # source of both "two glyphs merged" and "one glyph split" errors.
+    allh = [sg["y1"] - sg["y0"] for it in work for sg in it["segs"]]
+    H_g = float(np.median(allh)) if allh else glyph_w * 0.55
+    if allh and p.h_consensus:
+        for it in work:
+            Hc = float(np.clip(it["H_used"], p.h_consensus_lo * H_g, p.h_consensus_hi * H_g))
+            if abs(Hc - it["H_used"]) > 0.06 * H_g:
+                it["segs"], it["H_used"] = _segment_column(
+                    it["prof"], it["comps"], cbox, areas, cflat, Hc, p, it["by1"] - it["by0"])
+
+    # ---- emit boxes (after the two-glyph post-split) -----------------------
+    H_g = float(np.median(allh)) if allh else glyph_w * 0.55
+    maskB = mask2 > 0
+    raw = []
+    for it in work:
+        bx0, bx1, by0 = it["bx0"], it["bx1"], it["by0"]
+        lim = int(round(p.bbox_clip * (bx1 - bx0 + 1)))
+        for sg in it["segs"]:
+            box = (sg["x0"], sg["y0"] + by0, sg["x1"], sg["y1"] + by0)
+            for (px0, py0, px1, py1) in _post_split(box, maskB, H_g, p):
+                clipped = False
+                if px0 < bx0 - lim or px1 > bx1 + 1 + lim:
+                    px0 = max(px0, bx0 - lim)
+                    px1 = min(px1, bx1 + 1 + lim)
+                    clipped = True
+                sm = maskB[py0:py1, px0:px1]
+                area = max(1, (px1 - px0) * (py1 - py0))
+                ink = int(sm.sum())
+                if ink:
+                    fv = flat[py0:py1, px0:px1][sm].astype(np.float32)
+                    fmean = float(fv.mean())
+                    core = float((fv < p.core_thr).mean())
+                else:
+                    fmean, core = 255.0, 0.0
+                raw.append({"x0": int(px0), "y0": int(py0),
+                            "x1": int(px1), "y1": int(py1),
+                            "ink": ink, "flat": fmean,
+                            "ink_frac": ink / float(area), "core_frac": core,
+                            "clipped": clipped, "band": (bx0, bx1)})
+
+    if not raw:
+        return {"source": "", "width": int(w), "height": int(h), "base_scale": s,
+                "columns": [], "glyphs": [], "params": {}}
+
+    # ---- global columns: cluster the band centres across blocks ------------
+    mids = np.array([(a + b) / 2.0 for a, b in band_list], dtype=np.float64)
+    order = np.argsort(mids)
+    clusters = []
+    for i in order:
+        m = mids[i]
+        if clusters and abs(m - clusters[-1][-1]) <= p.col_merge_frac * glyph_w:
+            clusters[-1].append(m)
+        else:
+            clusters.append([m])
+    centres = np.array([float(np.median(c)) for c in clusters])
+    # right -> left  =>  reading order index 0 is the rightmost column
+    ordered = np.sort(centres)[::-1]
+    def col_of(x_center):
+        return int(np.argmin(np.abs(ordered - x_center)))
+    # column extents from the bands themselves
+    col_x = {}
+    for (a, b) in band_list:
+        ci = col_of((a + b) / 2.0)
+        if ci not in col_x:
+            col_x[ci] = [a, b]
+        else:
+            col_x[ci][0] = min(col_x[ci][0], a)
+            col_x[ci][1] = max(col_x[ci][1], b)
+    columns = [C.Column(idx=i, x0=col_x[i][0], x1=col_x[i][1] + 1)
+               for i in sorted(col_x)]
+
+    glyphs = []
+    for d in raw:
+        ci = col_of((d["band"][0] + d["band"][1]) / 2.0)
+        g = C.Glyph(id=0, x0=d["x0"], y0=d["y0"], x1=d["x1"], y1=d["y1"],
+                    col=ci, ink=d["ink"])
+        g.flat = d["flat"]
+        g.ink_frac = d["ink_frac"]
+        g.core_frac = d["core_frac"]
+        if d["clipped"]:
+            g.flags.append("clipped")
+        glyphs.append(g)
+
+    # ---- global filtering -------------------------------------------------
+    inks = np.array([g.ink for g in glyphs], dtype=np.float32)
+    med_ink = float(np.median(inks)) if inks.size else 0.0
+    ws = np.array([g.w for g in glyphs], dtype=np.float32)
+    hs = np.array([g.h for g in glyphs], dtype=np.float32)
+    med_w = float(np.median(ws)) if ws.size else 0.0
+    med_h = float(np.median(hs)) if hs.size else 0.0
+    out = []
+    for g in glyphs:
+        if med_ink and g.ink < max(1.0, p.min_ink_frac * med_ink):
+            continue
+        # not real ink: pale stain texture, a filled blob instead of strokes,
+        # or no really-dark pixel anywhere in the box
+        if (g.flat > p.flat_veto or g.ink_frac > p.ink_frac_max
+                or g.core_frac < p.core_frac_min):
+            continue
+        if med_w and g.w > 2.3 * med_w or (med_h and g.h > 2.3 * med_h):
+            continue
+        if med_w and med_h and g.w < 0.25 * med_w and g.h < 0.32 * med_h:
+            continue
+        if (med_w and g.w > 1.8 * med_w) or (med_h and g.h > 1.9 * med_h):
+            g.flags.append("oversize")
+        g.area = int(g.w * g.h)
+        out.append(g)
+    glyphs = out
+
+    # ---- reading order: columns right -> left, rows top -> bottom ---------
+    glyphs.sort(key=lambda g: (-g.col, g.y0))
+    for i, g in enumerate(glyphs, start=1):
+        g.id = i
+    by_col = {}
+    for g in glyphs:
+        by_col.setdefault(g.col, []).append(g)
+    for ci, lst in by_col.items():
+        lst.sort(key=lambda g: g.y0)
+        for r, g in enumerate(lst):
+            g.row = r
+    for col in columns:
+        col.ink = int(sum(g.ink for g in glyphs if g.col == col.idx))
+
+    page = {
+        "source": "",
+        "width": int(w),
+        "height": int(h),
+        "base_scale": s,
+        "columns": [c.as_dict() for c in columns],
+        "glyphs": [g.as_dict() for g in glyphs],
+        "params": {"glyph_w_px": glyph_w, "blocks": block_info},
+    }
+    if debug is not None:
+        debug.update({"flat": flat, "mask": mask2, "lab": lab, "keep": keep})
+    return page

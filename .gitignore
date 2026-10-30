@@ -1,0 +1,37 @@
+# --- build artefacts ---
+build/
+dist/
+*.spec.bak
+packaging/app.ico
+
+# --- generated / heavy outputs ---
+out/
+scratch/
+*.exe
+*.log
+app/logs/
+logs/
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# --- editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- local secrets ---
+config.json
+.env
+# --- raster assets stay local; the repo ships SVG wrappers (see samples/*.svg) ---
+samples/*.png
+samples/*.jpg
+samples/tiles/
+docs/style/*.jpg
+
