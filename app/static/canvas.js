@@ -95,6 +95,9 @@
 
   View.prototype._resize = function () {
     var r = this.wrap.getBoundingClientRect();
+    // 必须先按「旧」尺寸算画面中心点，否则侧栏折叠/展开后图像会偏到一边
+    var oldCw = Math.max(1, this.cw), oldCh = Math.max(1, this.ch);
+    var oldScale = this.scale || 1, oldTx = this.tx || 0, oldTy = this.ty || 0;
     this.dpr = window.devicePixelRatio || 1;
     this.cw = Math.max(1, Math.round(r.width));
     this.ch = Math.max(1, Math.round(r.height));
@@ -102,12 +105,17 @@
     this.canvas.height = Math.round(this.ch * this.dpr);
     this.canvas.style.width = this.cw + 'px';
     this.canvas.style.height = this.ch + 'px';
-    if (!this.data.w || !this.data.h) {
+    if (!this.data.w || !this.data.h || !this.scale) {
       this._recalcFit();
+      this.zoom = 1;
+      this._applyTransform();
+      this.tx = (this.cw - this.data.w * this.scale) / 2;
+      this.ty = (this.ch - 26 - this.data.h * this.scale) / 2;
       this.invalidate();
+      if (this.opts.onZoom) { this.opts.onZoom(this.zoomPct()); }
       return;
     }
-    var center = { x: (this.cw / 2 - this.tx) / this.scale, y: (this.ch / 2 - this.ty) / this.scale };
+    var center = { x: (oldCw / 2 - oldTx) / oldScale, y: (oldCh / 2 - oldTy) / oldScale };
     this._recalcFit();
     this._applyTransform();
     this.tx = this.cw / 2 - center.x * this.scale;

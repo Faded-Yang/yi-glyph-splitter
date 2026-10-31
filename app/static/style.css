@@ -120,6 +120,10 @@ a { color: var(--accent-2); }
 .main { flex: 1 1 auto; display: grid;
   grid-template-columns: var(--left-w, 266px) minmax(0, 1fr) var(--right-w, 352px);
   min-height: 0; position: relative; }
+/* 用显式栅格位置：折叠时 display:none 会让后续元素前移，不能靠 DOM 顺序 */
+.main > .sidebar { grid-column: 1; grid-row: 1; }
+.main > .stage { grid-column: 2; grid-row: 1; }
+.main > .inspector { grid-column: 3; grid-row: 1; }
 .main.left-collapsed { grid-template-columns: 0 minmax(0, 1fr) var(--right-w, 352px); }
 .main.left-collapsed > .sidebar, .main.left-collapsed > .splitter.s-left { display: none; }
 .main.right-collapsed { grid-template-columns: var(--left-w, 266px) minmax(0, 1fr) 0; }
