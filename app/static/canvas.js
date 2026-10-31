@@ -39,6 +39,7 @@
   View.prototype.setData = function (d) {
     var keep = !!(this.data.w && this.data.h && d.w === this.data.w && d.h === this.data.h);
     this.data = { w: d.w || 0, h: d.h || 0, boxes: d.boxes || [], selId: d.selId === undefined ? null : d.selId, columns: d.columns || [] };
+    this._renumber();
     this._recalcFit();
     if (!keep) { this.resetView(); } else { this._applyTransform(); this.invalidate(); }
   };
@@ -512,6 +513,45 @@
     ctx.restore();
   };
 
+  // ---- 框编号：按「最左列起、列内从上到下」动态编号（与导出 index.csv 的 visual 顺序一致）
+  View.prototype._renumber = function () {
+    var boxes = this.data.boxes || [];
+    var cols = this.data.columns || [];
+    var centers = [];
+    for (var i = 0; i < cols.length; i++) {
+      var c0 = cols[i];
+      var x0 = parseFloat(c0.x0), x1 = parseFloat(c0.x1);
+      if (isFinite(x0) && isFinite(x1)) { centers.push((x0 + x1) / 2); }
+    }
+    function colCx(b) {
+      var cx = (b.x0 + b.x1) / 2, best = null, bestD = null;
+      for (var k = 0; k < centers.length; k++) {
+        var dd = Math.abs(centers[k] - cx);
+        if (bestD === null || dd < bestD) { bestD = dd; best = centers[k]; }
+      }
+      return best === null ? cx : best;
+    }
+    var rows = boxes.map(function (b) { return { b: b, kx: colCx(b) }; });
+    rows.sort(function (p, q) {
+      if (p.kx !== q.kx) { return p.kx - q.kx; }
+      if (p.b.y0 !== q.b.y0) { return p.b.y0 - q.b.y0; }
+      return p.b.x0 - q.b.x0;
+    });
+    var map = {};
+    for (var m = 0; m < rows.length; m++) { map[rows[m].b.id] = m + 1; }
+    this.numMap = map;
+    this.numCount = rows.length;
+    this.numDigits = Math.max(3, String(Math.max(1, rows.length)).length);
+  };
+
+  View.prototype.numOf = function (id) { return (this.numMap && this.numMap[id]) || 0; };
+
+  View.prototype._numText = function (n) {
+    var s = String(n);
+    while (s.length < this.numDigits) { s = '0' + s; }
+    return s;
+  };
+
   View.prototype._drawBoxes = function () {
     var ctx = this.ctx, d = this.data, i, b, r, sel;
     ctx.textAlign = 'left';
@@ -543,16 +583,22 @@
       ctx.strokeRect(rnd(r.x) + 0.5, rnd(r.y) + 0.5, rnd(r.w), rnd(r.h));
       ctx.setLineDash([]);
       ctx.globalAlpha = 1;
-      if (sel) {
-        ctx.fillStyle = '#ef4444';
-        var lab = '#' + b.id;
-        var tw = ctx.measureText(lab).width;
-        var ly = r.y - 5;
-        if (ly < 10) { ly = r.y + 11; }
-        ctx.fillStyle = 'rgba(15,23,42,0.78)';
-        ctx.fillRect(r.x - 1, ly - 10, tw + 6, 13);
-        ctx.fillStyle = '#fecaca';
-        ctx.fillText(lab, r.x + 2, ly);
+      // 编号角标：所有框都显示，增删框后自动重排
+      var num = this.numOf(b.id);
+      // 太小的框（整页适配视图）不画编号，避免糊成一片；放大或选中时显示
+      if (num && (sel || (r.w >= 30 && r.h >= 22))) {
+        var txt = this._numText(num);
+        ctx.font = '600 10px Consolas, ui-monospace, monospace';
+        var tw = ctx.measureText(txt).width;
+        var ly = r.y - 4;
+        if (ly < 12) { ly = r.y + 12; }
+        var bw = tw + 7, bh = 13;
+        ctx.fillStyle = sel ? 'rgba(239,68,68,0.92)' : 'rgba(2,6,23,0.72)';
+        ctx.beginPath();
+        if (ctx.roundRect) { ctx.roundRect(r.x - 1, ly - 10, bw, bh, 3); ctx.fill(); }
+        else { ctx.fillRect(r.x - 1, ly - 10, bw, bh); }
+        ctx.fillStyle = sel ? '#ffffff' : col;
+        ctx.fillText(txt, r.x + 2.5, ly);
       }
     }
     var sb = this.selBox();

@@ -590,7 +590,8 @@
     body.classList.remove('hidden');
     var ord = readingOrder();
     var i = ord.indexOf(b);
-    $('#selIndexHint').textContent = '#' + b.id + ' · ' + (i + 1) + '/' + ord.length;
+    var vnum = (view && view.numOf) ? view.numOf(b.id) : 0;
+    $('#selIndexHint').textContent = (vnum ? ('第 ' + (vnum < 10 ? '00' : (vnum < 100 ? '0' : '')) + vnum + ' 框') : ('#' + b.id)) + ' · ' + (i + 1) + '/' + ord.length;
     renderSelFields();
     buildDetail();
   }
@@ -886,7 +887,7 @@
     var nrev = S.boxes.filter(function (b) { return !!b.review; }).length;
     var b = selBox();
     var t = S.pageId ? (nbox + ' 框 · 已复核 ' + nrev) : '未选页';
-    if (b) { t += ' · 选中 #' + b.id + ' (' + b.x0 + ',' + b.y0 + ')-(' + b.x1 + ',' + b.y1 + ')'; }
+    if (b) { var vn = (view && view.numOf) ? view.numOf(b.id) : 0; t += ' · 选中' + (vn ? ('第 ' + vn + ' 框') : ('#' + b.id)) + ' (' + b.x0 + ',' + b.y0 + ')-(' + b.x1 + ',' + b.y1 + ')'; }
     if (S.armed) { t += ' · 新建模式（拖框）'; }
     $('#hintBoxes').textContent = t;
   }
@@ -1506,6 +1507,7 @@
         renderHint();
       }
     });
+    window.YI_VIEW = view;   // 调试 / 自动化测试用句柄
     bindAll();
     initPanels();
     setSaveState('idle');
