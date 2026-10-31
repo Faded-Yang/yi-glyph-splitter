@@ -34,8 +34,7 @@
       <button class="btn" id="btnImportFolder" title="选择文件夹批量导入"><svg class="ico"><use href="#i-folder"/></svg><span>导入文件夹</span></button>
       <span class="sep"></span>
       <button class="btn primary" id="btnProcess" title="对勾选页（或全部页）跑分割，只画框不切图"><svg class="ico"><use href="#i-play"/></svg><span>一键处理</span></button>
-      <button class="btn" id="btnLearn" title="用本页人工改过的框，反推并保存分割参数（写入用户目录，立即生效，无需重装）"><svg class="ico"><use href="#i-gear"/></svg><span>一键学习</span></button>
-      <button class="btn" id="btnCols" title="显示/隐藏分列线（可直接拖动分隔线调整分列）"><svg class="ico"><use href="#i-doc"/></svg><span>分列线</span></button>
+            <button class="btn" id="btnCols" title="显示/隐藏分列线（可直接拖动分隔线调整分列）"><svg class="ico"><use href="#i-doc"/></svg><span>分列线</span></button>
       <button class="btn primary" id="btnExport" title="按当前框导出 tiles + index.csv + sheet.png"><svg class="ico"><use href="#i-download"/></svg><span>一键切图</span></button>
       <span class="sep"></span>
       <button class="btn" id="btnSettings" title="设置（导出默认值 / 项目目录）"><svg class="ico"><use href="#i-gear"/></svg><span>设置</span></button>
@@ -165,7 +164,8 @@
         <div id="pageInfo" class="pageinfo"></div>
         <div class="acts two">
           <button class="btn" id="btnProcessOne">处理本页</button>
-          <button class="btn" id="btnExportOne">切图本页</button>
+          <button class="btn" id="btnImportOut" title="用 out 文件夹里导出的框坐标覆盖本页（以手工导出为准）">导入 out 框</button>
+        <button class="btn" id="btnExportOne">切图本页</button>
           <button class="btn" id="btnReload">重新载入</button>
           <button class="btn" id="btnHarvest" title="把本页所有框（绿色/蓝色/红色都算）收进自建字库：切好的单字字形比印刷体更贴近这本手稿">收录自建字库</button>
           <button class="btn" id="btnColsReset" title="按墨迹重新自动分列（会丢掉手动调整）">重置分列</button>
@@ -207,7 +207,10 @@
 
     <div class="group-title">关于</div>
     <div class="dim" id="aboutBuild">版本 —</div>
-    <div class="dim" id="calibInfo">学习参数：未学习（默认参数）</div>
+    <div class="group-title">自建字库（用你切好的字形当模板）</div>
+    <div class="dim" id="userbankInfo">自建字库：0 个字形</div>
+    <div class="ublist" id="userbankList"></div>
+    <div class="row-btns"><button class="btn" id="btnHarvestAll" title="把项目里所有「已经手工改过」的页一次性收录进自建字库">收录全部已切页</button></div>
     <div class="dim" id="aboutHelp">拖线调边界；单击线选中（变黄）→「− 删分列」；「+ 加分列」按选中框/最宽列切；「重置分列」按墨迹重算</div>
 
     <div class="row-btns sticky">

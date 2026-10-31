@@ -198,3 +198,21 @@
 - 死路②：**NN 相似度过滤**——TP 中位 0.61 / spurious 0.44，按 sim<0.45 丢会误杀 57 个真框只换 38 个假框；`model_refine.py` 在 0.25 图无净收益，暂不接入 pipeline（保留模块备用）。
 - 硬约束：`out/` 只读（用户明确「可以读，不能写」）；手工框数量必须与 out 的 index.csv 一致（恢复页时用）。
 - 坑：bench 里 0.25 图坐标要 /scale 才能和手工全分辨率框比（踩过，导致 IoU 全 0）；脚本必须把 `tools/` 加进 sys.path 才能 import yi_core。
+## 已移除：动态学习（2026-11-01）
+- 用户判断「一键学习」鸡肋（只调几个旋钮，无法实质提升），整条功能已删：按钮、/api/learn、/api/calibration、app/learn.py、spec hiddenimport。
+- 分割参数仍可通过 %LOCALAPPDATA%/yi-segment/calibration/segment_params.json 覆盖（静态调优结果），但程序内不再有学习入口。
+
+## 主程序：导入 out 框（2026-11-01）
+- 顶栏「导入 out 框」：用 out/<页>/index.csv 的 gx0..gy1 覆盖本页框，自动向上找 out（也可在弹框填 out 目录），结果立即显示在画布。实测 0002_right 导入 551 框。
+
+## 独立字库管理程序 glyphmgr（2026-11-01）
+- 启动：python -m glyphmgr.run --port 9400（默认读仓库 out/），浏览器 http://127.0.0.1:9400/ 。
+- 功能：8 页 4379 切图按字形相似度聚成类（0.64，2160 类，>=8 个的 69 类）；每类列出所有页+框号；选中框可横切/竖切（比例滑杆）、与上一/下一框合并、切开整类、撤销。
+- 动作直接改写 out/<页> 的 PNG 与 index.csv：重新裁切（pad=max(6,0.1*max(w,h))，与导出器逐像素一致）、重新编号 001..N；改动前备份到 out/.glyphmgr/backup/<页>/<时间>/。
+- 实测：0002_right 551 -> 切 552 -> undo 551 -> 合并 550 -> undo 551；未触碰的 0004_left 用同一公式重算 40 张 tile 与磁盘文件 0 差异。
+- 坑：本机 OpenCV 的 imread/imwrite 对 TIF 和 PNG 都失败（can't open/read file）→ 一律用 PIL 读写（load_gray / Image.fromarray().save）。
+
+## 模板似然 DP（2026-11-01）
+- tools/yi_core/templatedp.py：8 页手工字形聚成 64 模板（scripts/build_templates.py -> %LOCALAPPDATA%/yi-segment/glyphbank/templates.npz），列带内 NCC 打分，DP=Σ字形似然+高度先验-切墨惩罚；Params.tpl_dp 默认 True，无模板自动回退。
+- 实测（8 页、0.25 图、leave-one-page-out 模板）：0.8873 -> 0.8902（missed 431->380，extra 581->613）；提升有限，主要收益是漏切减少。
+- 下一步（未做）：模板按真实笔画长宽比缩放、候选段归一化后余弦替代 NCC 滑窗、按页自适应权重。

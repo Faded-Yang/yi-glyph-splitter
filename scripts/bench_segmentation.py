@@ -126,6 +126,8 @@ def main():
     ap.add_argument("--project", default=os.path.join(os.environ.get("LOCALAPPDATA", ""),
                                                       "yi-segment", "projects", "默认项目"))
     ap.add_argument("--json", default="")
+    ap.add_argument("--tpl", action="store_true", help="use template-likelihood DP")
+    ap.add_argument("--loso", action="store_true", help="build templates without the page being scored")
     ap.add_argument("--model", action="store_true",
                     help="refine boxes with the hand-cut glyph model (refs_manual.npz)")
     ap.add_argument("--from-out", action="store_true",
@@ -137,6 +139,8 @@ def main():
     print("overrides:", json.dumps(overrides, ensure_ascii=False))
     import dataclasses
     valid = {k: v for k, v in overrides.items() if hasattr(S1.Params, k)}
+    if args.tpl:
+        valid["tpl_dp"] = True
     params = dataclasses.replace(S1.Params(), **valid) if valid else S1.Params()
 
     if args.from_out:
@@ -170,6 +174,22 @@ def main():
             import cv2
             h, w = gray.shape[:2]
             gray = cv2.resize(gray, (int(w * args.scale), int(h * args.scale)), interpolation=cv2.INTER_AREA)
+        if getattr(args, "tpl", False) and getattr(args, "loso", False):
+            try:
+                sys.path.insert(0, os.path.join(ROOT, "tools"))
+                from yi_core import templatedp
+                inks = []
+                for other, o_gray, o_boxes in all_refs:
+                    if other == d:
+                        continue
+                    for b in o_boxes:
+                        ink = _ink48(o_gray, b)
+                        if ink is not None:
+                            inks.append(ink)
+                tpl = templatedp.templates_from_refs(inks)
+                templatedp.set_templates(tpl)
+            except Exception as exc:  # noqa: BLE001
+                print("  (loso templates failed: %s)" % exc)
         page_out = S1.segment_page(gray, base_scale=args.scale, params=params)
         auto = to_boxes(page_out, args.scale)
         if args.model:
@@ -210,11 +230,43 @@ def refine_with_model(gray, boxes, page_name, scale=1.0):
         return boxes
 
 
+def _ink48(gray, box):
+    import cv2
+    x0, y0, x1, y1 = [int(v) for v in box]
+    tile = gray[max(0, y0):max(0, y1), max(0, x0):max(0, x1)]
+    if tile.size == 0:
+        return None
+    g = tile.astype(np.uint8)
+    if g.ndim == 3:
+        g = cv2.cvtColor(g, cv2.COLOR_RGB2GRAY)
+    thr, _ = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    m = (g < max(60, int(thr))).astype(np.uint8)
+    ys, xs = np.nonzero(m)
+    if ys.size < 20:
+        return None
+    crop = (m[ys.min():ys.max() + 1, xs.min():xs.max() + 1] * 255).astype(np.uint8)
+    h, w = crop.shape
+    side = max(h, w)
+    canvas = np.zeros((side, side), np.uint8)
+    canvas[(side - h) // 2:(side - h) // 2 + h, (side - w) // 2:(side - w) // 2 + w] = crop
+    return cv2.resize(canvas, (48, 48), interpolation=cv2.INTER_AREA)
+
+
 def bench_from_out(args, params, overrides):
     """Compare against the exporter output (index.csv) of the 6 hand-cut pages."""
     import csv
     out_root = os.path.join(ROOT, "out")
     scans = os.path.join(ROOT, "scans")
+    all_refs = []
+    for d in sorted(os.listdir(out_root)):
+        _csvf = os.path.join(out_root, d, "index.csv")
+        _tif = os.path.join(scans, d + ".tif")
+        if os.path.isfile(_csvf) and os.path.isfile(_tif) and (not args.pages or d in args.pages.split(",")):
+            _g = C.load_gray(_tif)
+            _b = [(int(float(r["gx0"])), int(float(r["gy0"])), int(float(r["gx1"])), int(float(r["gy1"])))
+                  for r in csv.DictReader(open(_csvf, encoding="utf-8-sig"))]
+            all_refs.append((d, _g, _b))
+
     rows = []
     for d in sorted(os.listdir(out_root)):
         csvf = os.path.join(out_root, d, "index.csv")

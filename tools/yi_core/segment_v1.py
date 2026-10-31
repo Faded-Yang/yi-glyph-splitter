@@ -82,6 +82,10 @@ class Params:
     wide_split_ratio: float = 1.50   # split when w > this * median glyph width
     wide_split_depth: float = 0.65   # col valley ink must be < this * median col ink
     # --- stain blobs (smooth filled patches look nothing like strokes) -------
+    tpl_dp: bool = True              # template-likelihood DP (falls back if templates.npz missing)
+    tpl_sim_w: float = 6.0           # weight of the glyph-likeness score
+    tpl_h_w: float = 2.2             # glyph height prior weight
+    tpl_ink_w: float = 0.6           # penalty for cutting through ink
     stain_filter: bool = True
     tighten_boxes: bool = True       # shrink box onto the glyph (drop stray specks)
     blob_solid: float = 0.85         # area / convex-hull area above this = blob-like
@@ -342,9 +346,20 @@ def _dp_cuts(prof: np.ndarray, height: int, H: float, p: Params):
     return cuts
 
 
-def _segment_column(prof, comps, cbox, areas, cflat, H, p: Params, height: int):
+def _segment_column(prof, comps, cbox, areas, cflat, H, p: Params, height: int, pm=None):
     """DP-cut one column and return merged segment boxes (rows relative to block)."""
-    cuts = _dp_cuts(prof, height, H, p)
+    cuts = None
+    if p.tpl_dp and pm is not None:
+        from . import templatedp
+        tpl = templatedp.load_default()
+        if tpl is not None:
+            try:
+                cuts = templatedp.dp_cuts(pm, tpl, H, sim_w=p.tpl_sim_w, h_w=p.tpl_h_w,
+                                          ink_w=p.tpl_ink_w, ink_curve=prof)
+            except Exception:
+                cuts = None
+    if cuts is None:
+        cuts = _dp_cuts(prof, height, H, p)
     if p.h_refine:
         hts = np.diff(np.asarray(cuts, dtype=np.float64))
         hts = hts[hts > 0]
@@ -652,7 +667,7 @@ def segment_page(gray: np.ndarray, *, base_scale: float = 1.0, params: Params | 
                 continue
             work.append({"by0": int(by0), "by1": int(by1),
                          "bx0": int(bx0), "bx1": int(bx1),
-                         "prof": prof,
+                         "prof": prof, "pm": pm,
                          "comps": [(int(c), float(ccy[c]) - by0) for c in sel],
                          "H": _estimate_H(prof, glyph_w)})
             kept.append((int(bx0), int(bx1)))
@@ -662,7 +677,8 @@ def segment_page(gray: np.ndarray, *, base_scale: float = 1.0, params: Params | 
     # ---- pass 1: segment with the per-column height guess ------------------
     for it in work:
         it["segs"], it["H_used"] = _segment_column(
-            it["prof"], it["comps"], cbox, areas, cflat, it["H"], p, it["by1"] - it["by0"])
+            it["prof"], it["comps"], cbox, areas, cflat, it["H"], p, it["by1"] - it["by0"],
+            pm=it.get("pm"))
 
     # ---- pass 2: one page-wide glyph height, then re-segment outliers ------
     # Handwriting keeps a stable glyph height per page; a column whose local
@@ -675,7 +691,8 @@ def segment_page(gray: np.ndarray, *, base_scale: float = 1.0, params: Params | 
             Hc = float(np.clip(it["H_used"], p.h_consensus_lo * H_g, p.h_consensus_hi * H_g))
             if abs(Hc - it["H_used"]) > 0.06 * H_g:
                 it["segs"], it["H_used"] = _segment_column(
-                    it["prof"], it["comps"], cbox, areas, cflat, Hc, p, it["by1"] - it["by0"])
+                    it["prof"], it["comps"], cbox, areas, cflat, Hc, p, it["by1"] - it["by0"],
+                    pm=it.get("pm"))
 
     # ---- emit boxes (after the two-glyph post-split) -----------------------
     H_g = float(np.median(allh)) if allh else glyph_w * 0.55

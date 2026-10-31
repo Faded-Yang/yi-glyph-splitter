@@ -19,7 +19,7 @@ hidden = [
     "uvicorn.lifespan.on",
     "yi_core", "yi_core.common", "yi_core.segment_v1", "yi_core.export", "yi_core.qc",
     "app", "app.run", "app.server", "app.store", "app.jobs", "app.pipeline",
-    "app.yi_ref", "app.userbank", "app.learn", "app.buildinfo", "app.paths", "app.config",
+    "app.yi_ref", "app.userbank", "app.buildinfo", "app.paths", "app.config",
     "app.config", "app.paths",
     # native window: pywebview -> pythonnet -> WebView2
     "webview", "webview.platforms.winforms", "webview.platforms.edgechromium",

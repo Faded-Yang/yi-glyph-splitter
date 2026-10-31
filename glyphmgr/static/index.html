@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>彝文字库管理</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.5 "Microsoft YaHei", system-ui, sans-serif; background: #0f141a; color: #d7e2ee; }
+  header { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: #151c25; border-bottom: 1px solid #26303d; }
+  header b { font-size: 14px; }
+  .sp { flex: 1; }
+  button { background: #1d2733; color: #d7e2ee; border: 1px solid #334152; border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+  button:hover { background: #263442; }
+  button.primary { background: #1d4ed8; border-color: #2563eb; }
+  main { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 45px); }
+  #classes { overflow: auto; border-right: 1px solid #26303d; background: #121820; }
+  .cls { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid #1b2430; }
+  .cls:hover { background: #1a2230; }
+  .cls.sel { background: #1f2c3d; }
+  .cls img { width: 40px; height: 40px; object-fit: contain; background: #0b1016; border-radius: 4px; }
+  .cls .n { color: #8aa2b8; font-size: 12px; }
+  #right { overflow: auto; padding: 10px 14px; }
+  #grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .g { width: 96px; border: 1px solid #26303d; border-radius: 6px; padding: 4px; background: #131a23; cursor: pointer; }
+  .g.sel { border-color: #facc15; }
+  .g img { width: 86px; height: 86px; object-fit: contain; background: #0b1016; display: block; }
+  .g .cap { font-size: 11px; color: #8aa2b8; text-align: center; }
+  #panel { margin-top: 14px; border-top: 1px solid #26303d; padding-top: 10px; display: none; }
+  #panel h3 { margin: 0 0 6px; font-size: 13px; }
+  #panel .row { display: flex; align-items: center; gap: 10px; margin: 6px 0; flex-wrap: wrap; }
+  #panel img { max-width: 260px; max-height: 260px; background: #0b1016; border: 1px solid #26303d; }
+  input[type=range] { width: 220px; }
+  #msg { color: #34d399; }
+</style>
+</head>
+<body>
+<header>
+  <b>彝文字库管理</b>
+  <span id="stats" class="n"></span>
+  <span class="sp"></span>
+  <label>最少同类 <input id="minN" type="number" value="1" min="1" style="width:56px"> 个</label>
+  <button id="btnReload">刷新分类</button>
+  <button id="btnUndo">撤销上一步</button>
+  <span id="msg"></span>
+</header>
+<main>
+  <div id="classes"></div>
+  <div id="right">
+    <div id="hint">左边选一个字形类，右边会列出这一类出现在所有页上的框（页名 + 框号）。</div>
+    <div id="grid"></div>
+    <div id="panel">
+      <h3 id="panelTitle"></h3>
+      <div class="row"><img id="pimg" alt=""></div>
+      <div class="row">
+        <label>切分位置 <input id="rel" type="range" min="0.15" max="0.85" step="0.01" value="0.5"> <span id="relv">0.50</span></label>
+        <label><input id="axisH" type="radio" name="axis" value="h" checked> 横切（上下两字）</label>
+        <label><input id="axisV" type="radio" name="axis" value="v"> 竖切（左右两字）</label>
+      </div>
+      <div class="row">
+        <button class="primary" id="btnSplitOne">切开这一个</button>
+        <button id="btnSplitClass">切开整类（同类所有框）</button>
+        <button id="btnMergeNext">与下一框合并</button>
+        <button id="btnMergePrev">与上一框合并</button>
+      </div>
+      <div class="row"><span class="n">动作会直接改写 out 里的切图与 index.csv（自动备份到 .glyphmgr/backup）。</span></div>
+    </div>
+  </div>
+</main>
+<script>
+var S = { classes: [], selClass: null, selGlyph: null };
+
+function api(path, body, method) {
+  return fetch(path, {
+    method: method || (body ? 'POST' : 'GET'),
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined
+  }).then(async function (r) {
+    var data = await r.json().catch(function () { return {}; });
+    if (!r.ok) { throw new Error((data && data.detail) || ('HTTP ' + r.status)); }
+    return data;
+  });
+}
+function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function msg(t) { document.getElementById('msg').textContent = t || ''; }
+
+async function refreshStats() {
+  var s = await api('/api/summary');
+  document.getElementById('stats').textContent = '共 ' + s.glyphs + ' 个切图 · ' + s.classes + ' 类 · ' + s.pages.length + ' 页';
+  return s;
+}
+
+async function loadClasses() {
+  var minN = parseInt(document.getElementById('minN').value || '1', 10);
+  var list = await api('/api/classes?min_n=' + minN);
+  S.classes = list;
+  var box = document.getElementById('classes');
+  box.innerHTML = '';
+  list.forEach(function (c) {
+    var row = el('div', 'cls');
+    if (S.selClass === c.id) row.classList.add('sel');
+    var img = document.createElement('img'); img.src = c.sample; img.loading = 'lazy';
+    row.appendChild(img);
+    row.appendChild(el('div', '', c.n + ' 个'));
+    row.appendChild(el('div', 'n', c.pages.length > 2 ? (c.pages[0] + ' 等 ' + c.pages.length + ' 页') : c.pages.join('、')));
+    row.onclick = function () { selectClass(c.id); };
+    box.appendChild(row);
+  });
+}
+
+async function selectClass(cid) {
+  S.selClass = cid; S.selGlyph = null;
+  await loadClasses();
+  var d = await api('/api/class/' + cid);
+  var grid = document.getElementById('grid');
+  grid.innerHTML = '';
+  document.getElementById('hint').textContent = '第 ' + cid + ' 类，共 ' + d.n + ' 个框。点一个框做切分/合并。';
+  d.members.forEach(function (m) {
+    var g = el('div', 'g');
+    var img = document.createElement('img'); img.src = m.tile; img.loading = 'lazy';
+    g.appendChild(img);
+    g.appendChild(el('div', 'cap', m.page.replace('彝族扫描', '') + ' #' + m.idx));
+    g.onclick = function () { selectGlyph(m); };
+    grid.appendChild(g);
+  });
+}
+
+function selectGlyph(m) {
+  S.selGlyph = m;
+  Array.prototype.forEach.call(document.querySelectorAll('.g'), function (n) { n.classList.remove('sel'); });
+  var panel = document.getElementById('panel');
+  panel.style.display = 'block';
+  document.getElementById('panelTitle').textContent = m.page + ' · 第 ' + m.idx + ' 框';
+  document.getElementById('pimg').src = m.tile;
+  event && event.currentTarget && event.currentTarget.classList && event.currentTarget.classList.add('sel');
+  document.getElementById('rel').value = 0.5;
+  document.getElementById('relv').textContent = '0.50';
+}
+
+function currentTarget() {
+  if (!S.selGlyph) { msg('先选一个框'); return null; }
+  return S.selGlyph;
+}
+
+document.getElementById('rel').addEventListener('input', function (e) {
+  document.getElementById('relv').textContent = parseFloat(e.target.value).toFixed(2);
+});
+
+document.getElementById('btnSplitOne').onclick = async function () {
+  var m = currentTarget(); if (!m) return;
+  var axis = document.getElementById('axisV').checked ? 'v' : 'h';
+  var rel = parseFloat(document.getElementById('rel').value);
+  try {
+    var r = await api('/api/split', { page: m.page, idx: m.idx, rel: rel, axis: axis });
+    msg(r.note || '已切分');
+    if (S.selClass != null) await selectClass(S.selClass); else await loadClasses();
+    await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
+
+document.getElementById('btnSplitClass').onclick = async function () {
+  if (S.selClass == null) { msg('先选一个类'); return; }
+  var axis = document.getElementById('axisV').checked ? 'v' : 'h';
+  var rel = parseFloat(document.getElementById('rel').value);
+  if (!confirm('把这一类所有框都按同样比例切开？')) return;
+  try {
+    var r = await api('/api/split', { page: S.selGlyph ? S.selGlyph.page : '', idx: S.selGlyph ? S.selGlyph.idx : 1, rel: rel, axis: axis, apply_class: S.selClass });
+    msg(r.note || '已切分整类');
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
+
+document.getElementById('btnMergeNext').onclick = async function () {
+  var m = currentTarget(); if (!m) return;
+  try {
+    var r = await api('/api/merge', { page: m.page, idx: m.idx, with_next: true });
+    msg('已合并第 ' + r.merged[0] + ' 与 ' + r.merged[1] + ' 框，剩 ' + r.n + ' 个');
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
+
+document.getElementById('btnMergePrev').onclick = async function () {
+  var m = currentTarget(); if (!m) return;
+  try {
+    var r = await api('/api/merge', { page: m.page, idx: m.idx, with_next: false });
+    msg('已合并第 ' + r.merged[0] + ' 与 ' + r.merged[1] + ' 框，剩 ' + r.n + ' 个');
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
+
+document.getElementById('btnUndo').onclick = async function () {
+  try {
+    var r = await api('/api/undo', {});
+    msg(r.ok ? ('已撤销：' + r.page + ' 恢复 ' + r.n + ' 个框') : ('撤销失败：' + r.error));
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('撤销失败：' + e.message); }
+};
+
+document.getElementById('btnReload').onclick = async function () {
+  try {
+    await api('/api/build', {});
+    await loadClasses(); await refreshStats();
+    msg('已重建分类');
+  } catch (e) { msg('重建失败：' + e.message); }
+};
+
+(async function () {
+  await refreshStats();
+  await loadClasses();
+})();
+</script>
+</body>
+</html>

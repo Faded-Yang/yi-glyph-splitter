@@ -29,7 +29,6 @@ from . import jobs as jobs_mod
 from . import paths
 from . import pipeline
 from . import buildinfo
-from . import learn as learn_mod
 from . import store as store_mod
 from .store import ProjectStore, StoreError
 
@@ -374,50 +373,6 @@ def _refcheck_job(app: FastAPI, pid: str):
                 "proposals": len(res.get("proposals") or [])}
 
     return fn
-
-
-def _learn_job(app: FastAPI, pid: str):
-    """Background job: learn segmentation params from this page's edited boxes."""
-    st: ProjectStore = app.state.store
-
-    def fn(job):
-        def progress(frac, message):
-            try:
-                job.progress(int(round(float(frac) * 100)), 100, message)
-            except Exception:
-                pass
-        try:
-            res = learn_mod.learn_from_page(st, pid, progress_cb=progress, cancel_cb=job.is_canceled)
-        except store_mod.StoreError as exc:
-            raise RuntimeError(str(exc))
-        job.add_result({"pid": pid, "profile": res})
-        return {"pid": pid, "profile": res}
-
-    return fn
-
-
-def _calibration_info() -> dict:
-    fp = pipeline.calibration_file()
-    info = {"file": fp, "params": {}, "learned_at": "", "source_page": ""}
-    if not fp:
-        return info
-    try:
-        data = json.loads(open(fp, encoding="utf-8").read())
-        pages_used = data.get("pages_used") or data.get("pages") or []
-        info.update({"params": data.get("params") or {},
-                     "learned_at": data.get("learned_at") or "",
-                     "source_page": data.get("source_page") or ((pages_used[0].get("name") or pages_used[0].get("export")) if pages_used else ""),
-                     "pages_count": int(data.get("pages_count") or len(pages_used) or 0),
-                     "pages_used": pages_used,
-                     "mean_f1": data.get("mean_f1"),
-                     "this_page": data.get("this_page") or {},
-                     "before": data.get("before") or {},
-                     "after": data.get("after") or {}})
-    except Exception:  # noqa: BLE001
-        pass
-    return info
-
-
 def _userbank_stats() -> dict:
     try:
         from . import userbank
@@ -778,26 +733,6 @@ def create_app(project_dir: str = "") -> FastAPI:
             message="排队中：规范字校验", meta={"pid": pid})
         return {"job_id": job_id, "pid": pid}
 
-    @app.get("/api/calibration")
-    def api_calibration():
-        return _calibration_info()
-
-    @app.post("/api/learn")
-    def api_learn(request: Request, body: Any = Body(default_factory=dict)):
-        """一键学习：用当前页人工修正过的框反推分割参数（写入用户校准文件，不用重装）。"""
-        store: ProjectStore = request.app.state.store
-        data = body if isinstance(body, dict) else {}
-        pid = data.get("pid") or ""
-        if not pid:
-            st0 = _state(request.app)
-            pages = st0.get("pages") or []
-            pid = pages[0]["id"] if pages else ""
-        if not pid or not store.has_page(pid):
-            raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
-        job_id = request.app.state.jobs.submit("learn", _learn_job(request.app, pid), total=1,
-                                               message="学习分割参数")
-        return {"job_id": job_id, "pid": pid}
-
     @app.put("/api/pages/{pid}/columns")
     def api_put_columns(pid: str, request: Request, body: Any = Body(default_factory=dict)):
         """User-adjusted column boundaries (drag the guide lines on the canvas)."""
@@ -886,10 +821,103 @@ def create_app(project_dir: str = "") -> FastAPI:
         from . import userbank
         return {"added": int(added), "userbank": userbank.stats()}
 
+    @app.post("/api/harvest_all")
+    def api_harvest_all(request: Request):
+        """把项目里所有「手工改过」的页一次收录进自建字库。"""
+        store: ProjectStore = request.app.state.store
+        from . import userbank
+        done, added_total, skipped = [], 0, []
+        for entry in store.pages():
+            pid = entry.get("id")
+            name = entry.get("name") or pid
+            if not pid:
+                continue
+            try:
+                edited = pipeline.page_is_edited(store, pid)
+            except Exception:
+                edited = False
+            if not edited:
+                skipped.append(name)
+                continue
+            try:
+                n = pipeline.harvest_confirmed(store, pid)
+                done.append({"name": name, "added": int(n)})
+                added_total += int(n)
+            except Exception as exc:  # noqa: BLE001
+                skipped.append("%s（%s）" % (name, exc))
+        return {"added": added_total, "pages": done, "skipped": skipped,
+                "userbank": userbank.stats()}
+
     @app.get("/api/userbank")
     def api_userbank():
         from . import userbank
         return userbank.stats()
+
+    @app.post("/api/pages/{pid}/import_out")
+    def api_import_out(pid: str, request: Request, body: Any = Body(default_factory=dict)):
+        """用 out/<页>/index.csv 里的框坐标覆盖这一页（以手工导出为准）。"""
+        store: ProjectStore = request.app.state.store
+        if not store.has_page(pid):
+            raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
+        entry = store.get_page(pid)
+        src = entry.get("src") or ""
+        data = body if isinstance(body, dict) else {}
+        want = (data.get("dir") or "").strip()
+        name = os.path.splitext(os.path.basename(src))[0]
+
+        def find_page_dir(base):
+            if not base or not os.path.isdir(base):
+                return ""
+            if os.path.isfile(os.path.join(base, "index.csv")):
+                return base
+            sub = os.path.join(base, name)
+            if os.path.isfile(os.path.join(sub, "index.csv")):
+                return sub
+            for cand in os.listdir(base):
+                if cand == name and os.path.isfile(os.path.join(base, cand, "index.csv")):
+                    return os.path.join(base, cand)
+            return ""
+
+        candidates = []
+        if want:
+            candidates.append(want)
+            candidates.append(os.path.dirname(want))
+        here = os.path.dirname(src)
+        for _ in range(4):
+            if not here or here == os.path.dirname(here):
+                break
+            candidates.append(os.path.join(here, "out"))
+            candidates.append(here)
+            here = os.path.dirname(here)
+        page_dir = ""
+        for cand in candidates:
+            page_dir = find_page_dir(cand)
+            if page_dir:
+                break
+        if not page_dir:
+            raise HTTPException(status_code=400,
+                                detail="没找到 %s 的 out 导出目录（可把 out 文件夹路径填进来）" % name)
+
+        csv_path = os.path.join(page_dir, "index.csv")
+        boxes = []
+        try:
+            import csv as _csv
+            with open(csv_path, encoding="utf-8-sig", newline="") as f:
+                for r in _csv.DictReader(f):
+                    if "gx0" in r and r.get("gx0"):
+                        boxes.append({"x0": int(float(r["gx0"])), "y0": int(float(r["gy0"])),
+                                      "x1": int(float(r["gx1"])), "y1": int(float(r["gy1"]))})
+                    else:
+                        boxes.append({"x0": int(float(r["x0"])), "y0": int(float(r["y0"])),
+                                      "x1": int(float(r["x1"])), "y1": int(float(r["y1"]))})
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail="读不了 index.csv：%s" % exc)
+        if not boxes:
+            raise HTTPException(status_code=400, detail="index.csv 里没有框")
+        store.save_boxes(pid, boxes, width=entry.get("w"), height=entry.get("h"))
+        return {"ok": True, "count": len(boxes), "dir": page_dir,
+                "boxes": [{"x0": b["x0"], "y0": b["y0"], "x1": b["x1"], "y1": b["y1"],
+                           "id": i + 1} for i, b in enumerate(boxes)]}
 
     @app.post("/api/project/open")
     def api_project_open(request: Request, body: Any = Body(default_factory=dict)):

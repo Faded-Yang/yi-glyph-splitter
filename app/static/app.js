@@ -919,7 +919,12 @@
       ['框数', String(S.boxes.length)],
       ['已复核', S.boxes.filter(function (b) { return !!b.review; }).length + ' / ' + S.boxes.length],
       ['分列', (S.page.columns && S.page.columns.length) ? (S.page.columns.length + ' 列' + (S.showCols ? '（已显示分列线）' : '（分列线已隐藏）')) : '无（先处理本页）'],
-      ['规范字', S.refStats ? ('中位 ' + S.refStats.median.toFixed(2) + ' · 低分 ' + S.refStats.low + '/' + S.refStats.n) : '未校验']
+      ['规范字', S.refStats ? ('中位 ' + S.refStats.median.toFixed(2) + ' · 低分 ' + S.refStats.low + '/' + S.refStats.n) : '未校验'],
+      ['自建字库', (function () {
+        var c = pageCollectedCount();
+        if (c == null) { return '—'; }
+        return c > 0 ? ('本页已收录 ' + c + ' 个') : '本页未收录';
+      })()]
     ];
     rows.forEach(function (r) {
       var line = el('div', 'kv');
@@ -1202,7 +1207,7 @@
     $('#setOrder').value = def.order || 'visual';
     $('#setFmt').value = def.fmt || 'png';
     $('#setProjectPath').value = (S.project && S.project.path) || '';
-    loadCalibrationInfo();
+    loadUserbank();
     var ab = document.getElementById('aboutBuild');
     if (ab) {
       var bd = S.build || '';
@@ -1380,7 +1385,40 @@
           toast(n ? ('已收录 ' + n + ' 个字形（绿/蓝/红都收；自建字库共 ' + total + ' 个）') : ('这一页的字形已经都收过了（自建字库 ' + total + ' 个）'),
                 n ? 'ok' : 'warn');
           if (r && r.userbank) { S.refUser = r.userbank; renderRef(); }
+          await loadUserbank();
         } catch (e) { toast('收录失败', 'err', e.message); }
+      });
+    }
+    var hva = document.getElementById('btnHarvestAll');
+    if (hva) {
+      hva.addEventListener('click', async function () {
+        if (!window.confirm('把项目里所有「手工改过」的页一次性收录进自建字库？' + String.fromCharCode(10) + '（已经收录过的不会重复计入）')) { return; }
+        hva.disabled = true;
+        try {
+          var r = await API.post('/api/harvest_all', {});
+          var doneN = (r && r.pages && r.pages.length) || 0;
+          toast('已收录 ' + ((r && r.added) || 0) + ' 个字形，涉及 ' + doneN + ' 页；自建字库共 '
+                + ((r && r.userbank && r.userbank.n) || 0) + ' 个', 'ok');
+          if (r && r.userbank) { renderUserbank(r.userbank); }
+        } catch (e) { toast('批量收录失败', 'err', e.message); }
+        hva.disabled = false;
+      });
+    }
+    var io = document.getElementById('btnImportOut');
+    if (io) {
+      io.addEventListener('click', async function () {
+        var pid = S.pageId;
+        if (!pid) { toast('先选一页', 'warn'); return; }
+        var hint = (S.page && S.page.name) || pid;
+        var dir = window.prompt('用 out 导出目录覆盖「' + hint + '」的框？\n可留空自动查找，或填 out 文件夹 / out/<页名> 的路径',
+                                localStorage.getItem('yi.outDir') || '');
+        if (dir === null) { return; }
+        if (dir) { localStorage.setItem('yi.outDir', dir); }
+        try {
+          var res = await API.post('/api/pages/' + encodeURIComponent(pid) + '/import_out', { dir: dir || '' });
+          await selectPage(pid);
+          toast('已导入 ' + res.count + ' 个框（' + res.dir + '）', 'ok');
+        } catch (e) { toast('导入 out 框失败', 'err', e.message); }
       });
     }
     var r = document.getElementById('btnColsReset');
@@ -1398,54 +1436,7 @@
     }
   }
 
-  async function loadCalibrationInfo() {
-    var el = document.getElementById('calibInfo');
-    if (!el) { return; }
-    try {
-      var info = await API.get('/api/calibration');
-      var params = (info && info.params) || {};
-      var keys = Object.keys(params);
-      if (!keys.length) {
-        el.textContent = '学习参数：未学习（用默认参数）';
-        return;
-      }
-      var txt = keys.map(function (k) { return k + '=' + params[k]; }).join(' ');
-      var extra = '';
-      if (info.pages_count) {
-        extra = ' · 累计 ' + info.pages_count + ' 页' + (info.mean_f1 != null ? (' · 平均 F1 ' + Number(info.mean_f1).toFixed(3)) : '');
-      }
-      el.textContent = '学习参数：' + txt + (info.learned_at ? ('（' + info.learned_at + extra + '）') : extra);
-    } catch (e) { el.textContent = '学习参数：读取失败'; }
-  }
 
-  async function startLearn() {
-    var pid = S.pageId;
-    if (!pid) { toast('先在左栏选一页', 'warn'); return; }
-    if (!S.boxes.length) { toast('这一页还没有框，先处理', 'warn'); return; }
-        var prevPages = 0;
-    try {
-      var info0 = await API.get('/api/calibration');
-      prevPages = (info0 && info0.pages_count) || 0;
-    } catch (e) { /* ignore */ }
-    var _msg = '把「' + ((pageById(pid) || {}).name || pid) + '」当前的 ' + S.boxes.length + ' 个框加入学习样本？'
-      + String.fromCharCode(10) + String.fromCharCode(10)
-      + '· 样本会累加：之前学过的 ' + prevPages + ' 页会继续保留，和新页一起重算参数'
-      + String.fromCharCode(10)
-      + '· 只替换「参数」，旧页的样本不会丢（可在设置里看到累计页数）';
-    if (!window.confirm(_msg)) { return; }
-    if (S.dirty) { try { await flushSave(); } catch (e) { /* ignore */ } }
-    var res;
-    try { res = await API.post('/api/learn', { pid: pid }); }
-    catch (e) { toast('启动学习失败', 'err', e.message); return; }
-    var rec = await trackJob(res.job_id, { kind: 'learn', label: '学习分割参数', pageIds: [pid] });
-    if (!rec || rec.state !== 'done') { return; }
-    var prof = ((rec.results || [])[0] || {}).profile || {};
-    var pages = prof.pages_count || 0;
-    var mean = prof.mean_f1;
-    toast('学习完成：累计 ' + pages + ' 页，平均 F1 ' + (mean != null ? Number(mean).toFixed(3) : '?'), 'ok');
-    await loadCalibrationInfo();
-    toast('参数已保存，下次「一键处理」自动用它（无需重装）', 'ok');
-  }
 
   function sortedCols() {
     var cols = ((S.page && S.page.columns) || []).slice();
@@ -1468,6 +1459,45 @@
     }).catch(function (e) { toast('保存分列失败', 'err', e.message); });
   }
 
+  function renderUserbank(ub) {
+    S.userbank = ub || null;
+    var info = document.getElementById('userbankInfo');
+    var list = document.getElementById('userbankList');
+    if (info) {
+      info.textContent = ub && ub.n
+        ? ('自建字库：' + ub.n + ' 个字形 · 已收录 ' + (ub.pages_count || (ub.pages || []).length) + ' 页')
+        : '自建字库：还没有收录（右栏「收录自建字库」）';
+    }
+    if (list) {
+      list.innerHTML = '';
+      var pages = (ub && ub.pages) || [];
+      if (!pages.length) {
+        list.appendChild(el('div', 'ub-empty', '（空）'));
+      } else {
+        pages.forEach(function (p) {
+          var row = el('div', 'ub-row');
+          row.appendChild(el('b', '', p.name));
+          row.appendChild(el('span', '', p.n + ' 个'));
+          list.appendChild(row);
+        });
+      }
+    }
+    renderPageInfo();
+  }
+
+  async function loadUserbank() {
+    try { var ub = await API.get('/api/userbank'); renderUserbank(ub); } catch (e) { /* ignore */ }
+  }
+
+  function pageCollectedCount() {
+    var ub = S.userbank;
+    if (!ub || !ub.pages || !S.page || !S.page.name) { return null; }
+    for (var i = 0; i < ub.pages.length; i++) {
+      if (ub.pages[i].name === S.page.name) { return ub.pages[i].n; }
+    }
+    return 0;
+  }
+
   function updateColSelUi() {
     var hint = document.getElementById('colSelInfo');
     if (hint) {
@@ -1486,8 +1516,6 @@
       confirmDialog('一键处理', text, function () { startProcess(ids.length ? ids : 'all'); });
     });
     $('#btnExport').addEventListener('click', openExport);
-    var bl = document.getElementById('btnLearn');
-    if (bl) { bl.addEventListener('click', startLearn); }
     $('#btnSettings').addEventListener('click', openDrawer);
     $('#jobCancel').addEventListener('click', cancelJob);
 
