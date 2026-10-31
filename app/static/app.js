@@ -1373,10 +1373,8 @@
     var pid = S.pageId;
     if (!pid) { toast('先在左栏选一页', 'warn'); return; }
     if (!S.boxes.length) { toast('这一页还没有框，先处理', 'warn'); return; }
-    if (!window.confirm('用「' + ((pageById(pid) || {}).name || pid) + '」当前的 ' + S.boxes.length + ' 个框作为标准答案，
-重新学习分割参数？
-
-会覆盖现有学习结果（可随时再用别的页学）。')) { return; }
+        var _msg = '用「' + ((pageById(pid) || {}).name || pid) + '」当前的 ' + S.boxes.length + ' 个框作为标准答案，重新学习分割参数？' + String.fromCharCode(10) + String.fromCharCode(10) + '会覆盖现有学习结果（可随时再用别的页学）。';
+    if (!window.confirm(_msg)) { return; }
     if (S.dirty) { try { await flushSave(); } catch (e) { /* ignore */ } }
     var res;
     try { res = await API.post('/api/learn', { pid: pid }); }

@@ -146,3 +146,9 @@
 - 扫描黑边：segment_v1._clear_dark_edge_bands（贴边、成条、墨密度>0.35 的列带直接清掉，参数 edge_clean/edge_band_frac/edge_band_ink）。
   0003_left 黑边假框 170+ -> 0；总框数 746 -> 563（人工 596）。
 - 多页学习脚本：scripts/learn_from_correction.py --pair EXPORT:TIF（可重复）。3 页结果：mean F1 0.8001 -> 0.8281。
+## 启动卡在「正在连接后端…」（2026-10-31 晚9）
+- 真因：app.js 里 startLearn 的 confirm 字符串被上一轮 patch 写成了**跨行字符串**（JS 里的裸换行）→ 整个 app.js SyntaxError，boot 不执行，前端永远停在初始提示。
+- 排查手段：加载 exe 的 http://127.0.0.1:<port>/ 用 CDP 听 Runtime.exceptionThrown → 直接拿到 SyntaxError；本地 node --check app.js 也能秒查。
+- 修法：字符串里要换行就用 String.fromCharCode(10) 或 \n，别在 python 侧拼接时把换行落进 JS 字面量。
+- **run_code 坑（已第 3 次踩）**：背包模板（反引号）里出现 Windows 路径 C:\Users\95959... 会被当成 \9 转义而整段解析失败（"\\8 and \\9 are not allowed in template strings"）。
+  → 命令字符串里路径一律用正斜杠 C:/Users/...；或把内容先写成文件再执行。
