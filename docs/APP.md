@@ -29,7 +29,7 @@
 
 ## 命令行（高级）
 
-    YiGlyphSplit.exe [--project D:\work\book1] [--port 8765] [--no-browser] [--debug]
+    YiGlyphSplit.exe [--project D:\work\book1] [--port 8765] [--browser] [--debug]
 
 日志：%LOCALAPPDATA%\yi-segment\logs\app.log
 配置：%LOCALAPPDATA%\yi-segment\config.json（含 API Key，明文存本机；不要提交到 git）

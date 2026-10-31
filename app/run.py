@@ -1,9 +1,15 @@
-"""Entry point: start the local API + UI server and open the browser.
+"""Entry point: native desktop window + local API server.
 
-    python -m app.run [--project PATH] [--port 8765] [--no-browser] [--debug]
+    python -m app.run [--project PATH] [--port 8765] [--browser] [--debug]
 
-Works both as a source checkout and as a PyInstaller one-file exe (where this
-file runs as __main__, so only absolute imports are safe).
+Window mode (default)
+    Runs the FastAPI/uvicorn server in a background thread and shows the UI in a
+    real desktop window (pywebview + WebView2).  No browser tabs, no address bar.
+    Fallbacks if the embedded browser is unavailable:
+        1. Microsoft Edge in --app mode (chromeless window)
+        2. the user's default browser
+
+    python -m app.run --browser     always use the default browser instead
 """
 from __future__ import annotations
 
@@ -11,8 +17,10 @@ import argparse
 import logging
 import os
 import socket
+import subprocess
 import sys
 import threading
+import time
 import webbrowser
 
 # --- make "app" importable both from source and from the frozen exe ----------
@@ -23,6 +31,8 @@ for _p in (_ROOT, _HERE):
         sys.path.insert(0, _p)
 
 from app import paths  # noqa: E402
+
+APP_TITLE = "彝文切字工具"
 
 
 def _ensure_text_streams() -> None:
@@ -49,8 +59,8 @@ def _fatal(message: str) -> None:
         pass
     try:
         import ctypes
-        ctypes.windll.user32.MessageBoxW(
-            None, message[-1500:], "彝文切字工具 · 启动失败", 0x10)
+        ctypes.windll.user32.MessageBoxW(None, message[-1500:],
+                                         APP_TITLE + " · 启动失败", 0x10)
     except Exception:
         pass
 
@@ -82,6 +92,63 @@ def _setup_logging(debug: bool) -> None:
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
+# --------------------------------------------------------------- window frontends
+def _edge_exe() -> str:
+    for p in (r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+              r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"):
+        cand = os.path.expandvars(p)
+        if os.path.isfile(cand):
+            return cand
+    return ""
+
+
+def _show_native_window(url: str, log: logging.Logger) -> bool:
+    """Real desktop window (pywebview / WebView2).  Blocks until closed."""
+    try:
+        import webview  # noqa: F401
+    except Exception as exc:
+        log.warning("pywebview 不可用（%s），尝试 Edge 应用窗口", exc)
+        return False
+    try:
+        webview.create_window(APP_TITLE, url, width=1520, height=960,
+                              min_size=(1024, 680), text_select=True)
+        log.info("native window created")
+        webview.start()
+        return True
+    except Exception:
+        log.exception("原生窗口启动失败，降级到浏览器")
+        return False
+
+
+def _show_edge_app(url: str, log: logging.Logger) -> bool:
+    edge = _edge_exe()
+    if not edge:
+        return False
+    try:
+        subprocess.Popen([edge, "--app=" + url, "--window-size=1520,960"],
+                         close_fds=True)
+        log.info("opened edge --app window")
+        return True
+    except Exception:
+        log.exception("Edge 应用窗口启动失败")
+        return False
+
+
+def _server_thread(app, port: int, debug: bool):
+    import uvicorn
+    # log_config=None: we configured logging ourselves; uvicorn's default
+    # dictConfig writes to sys.stderr, which does not exist in a windowed exe.
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_config=None,
+                            log_level="debug" if debug else "warning", access_log=False)
+    server = uvicorn.Server(config)
+    t = threading.Thread(target=server.run, daemon=True, name="uvicorn")
+    t.start()
+    deadline = time.time() + 30
+    while time.time() < deadline and not getattr(server, "started", False) and t.is_alive():
+        time.sleep(0.05)
+    return server, t
+
+
 def main(argv=None) -> int:
     try:
         return _main(argv)
@@ -97,7 +164,7 @@ def _main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="yi-segment", description="彝文古籍切字工具（本地桌面程序）")
     ap.add_argument("--project", default="", help="启动时打开/创建的项目目录")
     ap.add_argument("--port", type=int, default=8765)
-    ap.add_argument("--no-browser", action="store_true")
+    ap.add_argument("--browser", action="store_true", help="用系统浏览器打开（不使用内嵌窗口）")
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args(argv)
 
@@ -118,21 +185,32 @@ def _main(argv=None) -> int:
     except Exception:
         pass
 
-    if not args.no_browser:
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    server, thread = _server_thread(app, port, args.debug)
+    log.info("serving %s (project=%r, frozen=%s)", url, args.project,
+             getattr(sys, "frozen", False))
 
-    log.info("serving %s (project=%r, frozen=%s)", url, args.project, getattr(sys, "frozen", False))
     try:
-        import uvicorn
-        # log_config=None: we configured logging ourselves; uvicorn's default
-        # dictConfig writes to sys.stderr, which does not exist in a windowed exe.
-        config = uvicorn.Config(app, host="127.0.0.1", port=port,
-                                log_config=None,
-                                log_level="debug" if args.debug else "warning",
-                                access_log=False)
-        uvicorn.Server(config).run()
+        if args.browser:
+            webbrowser.open(url)
+            while thread.is_alive():
+                time.sleep(0.5)
+        elif _show_native_window(url, log):
+            pass                                  # window closed -> shut down
+        elif _show_edge_app(url, log):
+            while thread.is_alive():
+                time.sleep(0.5)
+        else:
+            webbrowser.open(url)
+            while thread.is_alive():
+                time.sleep(0.5)
     except KeyboardInterrupt:
         pass
+    finally:
+        try:
+            server.should_exit = True
+            thread.join(timeout=5)
+        except Exception:
+            pass
     return 0
 
 

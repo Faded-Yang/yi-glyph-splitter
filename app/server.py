@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -35,6 +36,44 @@ log = logging.getLogger("app.server")
 VERSION = "1.0"
 APP_TITLE = "彝文切字工具"
 DEFAULT_PREVIEW_W = pipeline.PREVIEW_W
+
+# A preview can be missing or half-written (cancelled job, killed process).
+# Both the detail endpoint and the image endpoint repair it on demand.
+_PREVIEW_LOCKS: dict = {}
+_PREVIEW_LOCKS_GUARD = threading.Lock()
+
+
+def _preview_lock(pid: str):
+    with _PREVIEW_LOCKS_GUARD:
+        lk = _PREVIEW_LOCKS.get(pid)
+        if lk is None:
+            lk = threading.Lock()
+            _PREVIEW_LOCKS[pid] = lk
+        return lk
+
+
+def _preview_ok(path) -> bool:
+    """True when preview.png exists and looks like a complete PNG."""
+    try:
+        if not path.is_file() or path.stat().st_size < 1024:
+            return False
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+            fh.seek(-12, os.SEEK_END)
+            tail = fh.read()
+        return head == b"\x89PNG\r\n\x1a\n" and b"IEND" in tail
+    except Exception:
+        return False
+
+
+def _ensure_preview(store: ProjectStore, pid: str, width: int = DEFAULT_PREVIEW_W,
+                    rebuild: bool = False) -> None:
+    path = store.preview_path(pid)
+    if not rebuild and _preview_ok(path):
+        return
+    with _preview_lock(pid):
+        if rebuild or not _preview_ok(path):
+            pipeline.build_preview(store, pid, width=width)
 
 PLACEHOLDER_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>彝文切字工具</title>
@@ -628,6 +667,12 @@ def create_app(project_dir: str = "") -> FastAPI:
         boxes = store.boxes(pid)
         props = store.proposals(pid)
         w, h = store.dims(pid)
+        if w <= 0 or h <= 0:                       # stale/partial project data
+            try:
+                w, h = pipeline._image_size(entry.get("src") or "")
+                store.update_page(pid, width=w, height=h)
+            except Exception:
+                w, h = w or 0, h or 0
         return {
             "pid": pid,
             "name": entry.get("name") or "",
@@ -646,21 +691,27 @@ def create_app(project_dir: str = "") -> FastAPI:
                      "w": w, "h": h},
             "boxes": boxes,
             "preview_url": "/api/pages/%s/preview.png?w=%d" % (pid, DEFAULT_PREVIEW_W),
+            "has_preview": _preview_ok(store.preview_path(pid)),
             "n_proposals": len(props.get("proposals") or []),
             "ai_available": _ai_available(),
         }
 
     @app.get("/api/pages/{pid}/preview.png")
     def api_preview(pid: str, request: Request,
-                    w: int = Query(DEFAULT_PREVIEW_W), boxes: str = ""):
+                    w: int = Query(DEFAULT_PREVIEW_W), boxes: str = "",
+                    rebuild: int = 0):
         store: ProjectStore = request.app.state.store
         if not store.has_page(pid):
             raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
-        p = store.preview_path(pid)
-        if not p.is_file():
-            raise HTTPException(status_code=404,
-                                detail="预览图还没生成，请先处理这一页")
         w = max(200, min(4000, int(w or DEFAULT_PREVIEW_W)))
+        try:
+            _ensure_preview(store, pid, width=max(DEFAULT_PREVIEW_W, w),
+                            rebuild=bool(rebuild))
+        except StoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail="生成预览图失败：%s" % exc)
+        p = store.preview_path(pid)
         try:
             with open(p, "rb") as f:
                 data = f.read()

@@ -31,11 +31,12 @@
 ## 快速开始
 
 **A. 直接用 exe**：双击 `distYiGlyphSplit.exe`（或 `YiGlyphSplit.exe --project D:ook1 --port 8765`）。
-启动后自动打开浏览器（本地服务，仅 127.0.0.1）。
+启动后弹出**本地窗口**（pywebview + 内嵌 WebView2，不是浏览器标签页；服务只监听 127.0.0.1）。
+   想强制用系统浏览器：加 `--browser`。若机器缺 WebView2 运行时，会自动降级到 Edge 应用窗口 / 默认浏览器。
 
 **B. 从源码跑界面**：
 
-    pip install fastapi uvicorn openai numpy opencv-python scipy pillow
+    pip install fastapi uvicorn openai numpy opencv-python scipy pillow pywebview pythonnet
     python -m app.run --project D:ook1
 
 **C. 只用命令行批量切图**（无界面，适合几百页）：
@@ -88,7 +89,7 @@ CLI 还会额外写 `page.json`（全部坐标）与 `overlay.png`（整页叠�
 ## 项目结构
 
     app/                 桌面程序（FastAPI + 原生 JS，无框架）
-      run.py             入口：起服务 + 开浏览器
+      run.py             入口：起服务 + 原生桌面窗口（WebView2）
       server.py store.py jobs.py pipeline.py   后端
       ai_refine.py       DeepSeek 视觉复核
       static/            index.html app.js canvas.js style.css
@@ -111,8 +112,8 @@ CLI 还会额外写 `page.json`（全部坐标）与 `overlay.png`（整页叠�
 
 ## 环境与依赖
 
-Python 3.10；numpy / opencv-python / scipy / pillow / fastapi / uvicorn / openai。
-不需要 GPU、不需要 torch、不需要联网（AI 复核除外）。
+Python 3.10；numpy / opencv-python / scipy / pillow / fastapi / uvicorn / openai /
+pywebview(+pythonnet, 原生窗口)。不需要 GPU、不需要 torch、不需要联网（AI 复核除外）。
 
 ## 常见问题
 
@@ -120,6 +121,10 @@ Python 3.10；numpy / opencv-python / scipy / pillow / fastapi / uvicorn / opena
 窗口模式（`--noconsole`）下 `sys.stdout/stderr` 是 `None`，而 uvicorn 默认日志配置要写 `sys.stderr`。
 本仓库 `app/run.py` 已修：启动时把空流重定向到 devnull，并给 uvicorn 传 `log_config=None`（日志自己写到
 `%LOCALAPPDATA%yi-segmentlogsapp.log`）。若你改过入口文件，注意别把这两处改回去。
+
+**画布一片空白、右栏显示「尺寸 0 × 0」**：多半是这一页的预览图缺失或写坏了（处理到一半被取消/进程被杀）。
+现在会自动修复：服务端在打开页面或请求预览时发现缺失/损坏就当场重建，前端失败一次还会带 `?rebuild=1` 重试；
+也可以手动点右栏「重新载入」。若仍空白，看日志 `%LOCALAPPDATA%\yi-segment\logs\app.log`。
 
 **双击没反应 / 端口被占用**：程序会自动顺延端口（8765→8766…）并打印在日志里；也可以在快捷方式后加
 `--port 9000`。**SmartScreen 拦截**：exe 未签名，选「更多信息 → 仍要运行」。

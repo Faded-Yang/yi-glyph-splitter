@@ -26,7 +26,7 @@
     dirty: false, saveState: 'idle', saveTimer: null, saving: false,
     jobs: {}, jobOrder: [], jobProgress: {}, pollTimer: null, activeJobId: null,
     proposals: [], aiAvailable: true, aiConfigured: false,
-    previewW: 1600, previewToken: 1, detailTimer: null, detailRect: null,
+    previewW: 1600, previewToken: 1, previewRebuildTried: -1, detailTimer: null, detailRect: null,
     checked: {}, filter: '', armed: false, modalOpen: null,
     tempId: 1, lastExportOut: ''
   };
@@ -255,8 +255,20 @@
     };
   }
 
-  function previewUrl(pid, w) {
-    return '/api/pages/' + encodeURIComponent(pid) + '/preview.png?w=' + w + '&boxes=0&t=' + S.previewToken;
+  function previewUrl(pid, w, rebuild) {
+    return '/api/pages/' + encodeURIComponent(pid) + '/preview.png?w=' + w +
+      '&boxes=0&t=' + S.previewToken + (rebuild ? '&rebuild=1' : '');
+  }
+
+  // A preview can be missing / half-written (cancelled or crashed processing).
+  // First failure -> ask the server to rebuild it once; second -> tell the user.
+  function retryPreviewWithRebuild(url) {
+    if (!S.pageId || S.previewRebuildTried === S.previewToken) { return false; }
+    S.previewRebuildTried = S.previewToken;
+    var w = S.previewW || 1600;
+    setStageHint('预览图缺失或损坏，正在重建…');
+    view.setImage(previewUrl(S.pageId, w, true));
+    return true;
   }
 
   function loadPreview() {
@@ -1341,8 +1353,10 @@
       onMouseMove: function (m) { updateHintPos(m); },
       onZoom: function (pct) { onZoomPct(pct); },
       onImageLoad: function () { setStageHint(''); },
-      onImageError: function () {
-        setStageHint('预览不可用：该页可能还没处理（点右栏「处理本页」或顶部「一键处理」）');
+      onImageError: function (url) {
+        if (retryPreviewWithRebuild(url)) { return; }
+        setStageHint('预览图加载失败。可点右栏「重新载入」重建，或先「处理本页」。');
+        toast('预览图加载失败', 'err', '点右栏「重新载入」可重建预览');
       },
       onArmedChange: function (on) {
         S.armed = on;

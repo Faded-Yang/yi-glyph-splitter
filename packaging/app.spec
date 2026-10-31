@@ -4,6 +4,8 @@ import os
 
 ROOT = os.path.abspath(os.getcwd())
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules  # noqa: E402
+
 hidden = [
     "uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto",
     "uvicorn.protocols", "uvicorn.protocols.http",
@@ -13,12 +15,26 @@ hidden = [
     "yi_core", "yi_core.common", "yi_core.segment_v1", "yi_core.export", "yi_core.qc",
     "app", "app.run", "app.server", "app.store", "app.jobs", "app.pipeline",
     "app.ai_refine", "app.config", "app.paths",
+    # native window: pywebview -> pythonnet -> WebView2
+    "webview", "webview.platforms.winforms", "webview.platforms.edgechromium",
+    "clr", "pythonnet", "clr_loader",
 ]
+
+# pywebview ships WebView2 interop DLLs; pythonnet needs its runtime DLLs
+try:
+    _wv_data = collect_data_files("webview")
+except Exception:
+    _wv_data = []
+try:
+    _wv_hidden = collect_submodules("webview")
+except Exception:
+    _wv_hidden = []
+hidden = list(dict.fromkeys(hidden + _wv_hidden))
 
 datas = [
     (os.path.join(ROOT, "app", "static"), os.path.join("app", "static")),
     (os.path.join(ROOT, "tools"), "tools"),
-]
+] + list(_wv_data)
 
 a = Analysis(
     [os.path.join(ROOT, "app", "run.py")],
