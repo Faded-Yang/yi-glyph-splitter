@@ -303,6 +303,26 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
     this.canvas.addEventListener('pointercancel', function (e) { self._up(e); });
     this.canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
+    // 拖拽期间把 move/up 也挂到 window：指针一旦离开画布（或系统抢走指针），
+    // 画布收不到后续 move 就会「突然停住，怎么拖都不动」。
+    window.addEventListener('pointermove', function (e) {
+      if (self.mode === 'idle') { return; }
+      if (e.pointerType === 'mouse' && e.buttons === 0) { self._up(e); return; }
+      self._move(e);
+    }, true);
+    window.addEventListener('pointerup', function (e) {
+      if (self.mode === 'idle') { return; }
+      self._up(e);
+    }, true);
+    // 指针捕获被浏览器收走时立刻抢回来，否则拖动会断在半路
+    this.canvas.addEventListener('lostpointercapture', function (e) {
+      if (self.mode === 'idle' || !self.drag) { return; }
+      try { self.canvas.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+    });
+    // 原生拖拽/框选会打断 pointer 流，直接禁用
+    this.canvas.addEventListener('dragstart', function (e) { e.preventDefault(); });
+    this.canvas.addEventListener('selectstart', function (e) { e.preventDefault(); });
+
     this.canvas.addEventListener('pointerdown', function (e) {
       if (!e.shiftKey) { return; }
       var p = self.screenPos(e);
@@ -350,15 +370,21 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
     if (ev.button === 2) { ev.preventDefault(); return; }
     if (ev.button !== 0 && ev.button !== 1) { return; }
     try { this.canvas.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+    try { ev.preventDefault(); } catch (e) { /* ignore */ }
     var p = this.screenPos(ev);
     var ip = this.imgFromScreen(p.x, p.y);
     this.mouse = { sx: p.x, sy: p.y, x: ip.x, y: ip.y };
-    var ci = this._colBoundaryAt(p.x);
-    if (ci >= 0 && !this.space) {
-      this.mode = 'col';
-      this.drag = { idx: ci, x0: p.x, moved: false };
-      this.invalidate();
-      return;
+    // 先看是不是抓在框的控制点上：手柄优先级必须高于分列线，否则在分列线附近
+    // 拉框边会变成拖分列，看起来就像「框卡住了」。
+    var earlyHit = this.hit(p.x, p.y);
+    if (!(earlyHit && earlyHit.type === 'handle')) {
+      var ci = this._colBoundaryAt(p.x);
+      if (ci >= 0 && !this.space) {
+        this.mode = 'col';
+        this.drag = { idx: ci, x0: p.x, moved: false };
+        this.invalidate();
+        return;
+      }
     }
     if (this.selCol !== -1) {
       this.selCol = -1;
@@ -382,7 +408,7 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
     if (hit && hit.type === 'handle') {
       this.mode = 'resize';
       this.drag = {
-        handle: hit.handle, box: hit.box, ip: ip,
+        handle: hit.handle, box: hit.box, boxId: hit.box.id, ip: ip,
         orig: { x0: hit.box.x0, y0: hit.box.y0, x1: hit.box.x1, y1: hit.box.y1 }
       };
       if (this.opts.onEditStart) { this.opts.onEditStart(); }
@@ -395,7 +421,7 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
       }
       this.mode = 'move';
       this.drag = {
-        box: hit.box, ip: ip,
+        box: hit.box, boxId: hit.box.id, ip: ip,
         orig: { x0: hit.box.x0, y0: hit.box.y0, x1: hit.box.x1, y1: hit.box.y1 }
       };
       if (this.opts.onEditStart) { this.opts.onEditStart(); }
@@ -409,6 +435,17 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
     this.drag = { sx: p.x, sy: p.y, tx: this.tx, ty: this.ty };
     this._cursor('grabbing');
     this.invalidate();
+  };
+
+  View.prototype._dragBox = function (what) {
+    var d = this.drag;
+    if (!d) { return null; }
+    if (d.boxId != null && this.data && this.data.boxes) {
+      for (var i = 0; i < this.data.boxes.length; i++) {
+        if (this.data.boxes[i].id === d.boxId) { d.box = this.data.boxes[i]; return d.box; }
+      }
+    }
+    return d.box || null;
   };
 
   View.prototype._move = function (ev) {
@@ -455,7 +492,8 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
       return;
     }
     if (this.mode === 'move') {
-      var b = this.drag.box, o = this.drag.orig;
+      var b = this._dragBox('move'), o = this.drag.orig;
+      if (!b) { return; }
       var dx = ip.x - this.drag.ip.x, dy = ip.y - this.drag.ip.y;
       dx = clamp(o.x0 + dx, 0, d.w - (o.x1 - o.x0)) - o.x0;
       dy = clamp(o.y0 + dy, 0, d.h - (o.y1 - o.y0)) - o.y0;
@@ -466,7 +504,8 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
       return;
     }
     if (this.mode === 'resize') {
-      var bx = this.drag.box, or = this.drag.orig, h = this.drag.handle;
+      var bx = this._dragBox('resize'), or = this.drag.orig, h = this.drag.handle;
+      if (!bx) { return; }
       var nx0 = or.x0, ny0 = or.y0, nx1 = or.x1, ny1 = or.y1;
       if (h.indexOf('w') >= 0) { nx0 = clamp(ip.x, 0, or.x1 - MIN_SIZE); }
       if (h.indexOf('e') >= 0) { nx1 = clamp(ip.x, or.x0 + MIN_SIZE, d.w); }
@@ -480,6 +519,13 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
 
   View.prototype._up = function (ev) {
     var was = this.mode;
+    // 鼠标被系统「取消」时（WebView 抢指针/触控板手势）画布会收到 pointercancel；
+    // 对鼠标来说这不是松手，继续拖，否则就会表现成「突然断触」。
+    if (ev && ev.type === 'pointercancel' && ev.pointerType === 'mouse'
+        && (was === 'move' || was === 'resize' || was === 'pan' || was === 'create')) {
+      try { this.canvas.setPointerCapture(ev.pointerId); } catch (e) { /* ignore */ }
+      return;
+    }
     if (was === 'col') {
       var d = this.drag;
       this.mode = 'idle';

@@ -360,3 +360,10 @@ kbd { font-family: Consolas, ui-monospace, monospace; font-size: 11px; padding: 
 .refcard .cnt { display: block; font-size: 10px; color: #94a3b8; margin-top: 1px; }
 .refcard.user img { border-color: #34d399; box-shadow: 0 0 0 1px rgba(52, 211, 153, .35); }
 .refcard.user .sc { color: #34d399; }
+
+.ublist { max-height: 132px; overflow: auto; margin: 2px 0 8px; padding: 6px 8px;
+  border: 1px solid #26303d; border-radius: 6px; background: #121820; font-size: 12px; color: #9fb0c3; }
+.ublist .ub-row { display: flex; justify-content: space-between; gap: 8px; padding: 1px 0; }
+.ublist .ub-row b { color: #cfe0f0; font-weight: 500; }
+.ublist .ub-row span { color: #6f8299; }
+.ublist .ub-empty { color: #6f8299; }

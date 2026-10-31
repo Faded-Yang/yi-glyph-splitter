@@ -216,3 +216,8 @@
 - tools/yi_core/templatedp.py：8 页手工字形聚成 64 模板（scripts/build_templates.py -> %LOCALAPPDATA%/yi-segment/glyphbank/templates.npz），列带内 NCC 打分，DP=Σ字形似然+高度先验-切墨惩罚；Params.tpl_dp 默认 True，无模板自动回退。
 - 实测（8 页、0.25 图、leave-one-page-out 模板）：0.8873 -> 0.8902（missed 431->380，extra 581->613）；提升有限，主要收益是漏切减少。
 - 下一步（未做）：模板按真实笔画长宽比缩放、候选段归一化后余弦替代 NCC 滑窗、按页自适应权重。
+## 拖框「断触」修复（2026-11-01 凌晨5）
+- 症状：移动/拉框边时框突然不动，要反复扒拉几下才能继续。
+- 根因（多条叠加）：①画布只监听自己的 pointermove/up，指针被系统或窗口外抢走后收不到后续事件；②WebView 对鼠标发 pointercancel 时旧代码把它当松手直接结束拖动；③拖动拿的是 box 对象引用，期间任何 view.setData 换成新数组就会改到孤儿对象；④抓在框控制点上时若附近有分列线，会先命中分列线（变成拖列，框看起来卡住）。
+- 修法：window 级 pointermove/pointerup 兜底；lostpointercapture 后重新 setPointerCapture；pointercancel(pointerType=mouse) 不再结束拖动；_dragBox() 按 box id 每次重新取框；控制点命中优先于分列线；pointerdown preventDefault + CSS #cv{touch-action:none;user-select:none}。
+- 验证（打包 exe 内 CDP）：拖动 5 步 x 120→550，中途注入 pointercancel 后继续 658→1088，移出画布仍跟随，松手 mode=idle，无 JS 异常。
