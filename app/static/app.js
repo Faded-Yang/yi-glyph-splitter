@@ -748,7 +748,7 @@
       if (sum) { sum.textContent = stat.good + ' 好 / ' + stat.low + ' 可疑 / ' + stat.n; }
       lv.textContent = '中位 ' + stat.median.toFixed(2) + ' · 低分 ' + stat.low + '/' + stat.n;
       lv.className = 'pill';
-      hint.textContent = '已校验：绿色=像规范字，红色虚框=可疑（可能两字粘连/残缺）。点选一个框看它的对照字形。';
+      hint.textContent = '已校验：绿色=很符合规范字（≥0.62），红色=可疑（<0.38，可能两字粘连/残缺），青色=一般。点选一个框看它的对照字形。';
       return;
     }
     if (!info) {
