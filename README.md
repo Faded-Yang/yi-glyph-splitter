@@ -114,6 +114,16 @@ CLI 还会额外写 `page.json`（全部坐标）与 `overlay.png`（整页叠�
 Python 3.10；numpy / opencv-python / scipy / pillow / fastapi / uvicorn / openai。
 不需要 GPU、不需要 torch、不需要联网（AI 复核除外）。
 
+## 常见问题
+
+**打包后的 exe 一启动就弹 “Unhandled exception in script / Unable to configure formatter 'default'”**
+窗口模式（`--noconsole`）下 `sys.stdout/stderr` 是 `None`，而 uvicorn 默认日志配置要写 `sys.stderr`。
+本仓库 `app/run.py` 已修：启动时把空流重定向到 devnull，并给 uvicorn 传 `log_config=None`（日志自己写到
+`%LOCALAPPDATA%yi-segmentlogsapp.log`）。若你改过入口文件，注意别把这两处改回去。
+
+**双击没反应 / 端口被占用**：程序会自动顺延端口（8765→8766…）并打印在日志里；也可以在快捷方式后加
+`--port 9000`。**SmartScreen 拦截**：exe 未签名，选「更多信息 → 仍要运行」。
+
 ## 许可证
 
 MIT（见 `LICENSE`）。
