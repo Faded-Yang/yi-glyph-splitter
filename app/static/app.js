@@ -397,6 +397,7 @@
     if (!S.pageId) { return; }
     pushUndo();
     fn();
+    clearRefDashes();
     setSaveState('dirty');
     view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
     renderInspector(); renderHint(); renderPageInfo(); renderRef();
@@ -432,13 +433,25 @@
   }
 
   // ------------------------------------------------------------------ 框操作
+  // 规范字校验的虚线只是「扫一眼」的临时提示：一旦用户开始动手（点选/改框），
+  // 全局虚线立即消失，避免长期糊在画布上。分数数据仍保留，右栏照常显示。
+  function clearRefDashes() {
+    var n = 0;
+    S.boxes.forEach(function (b) { if (b.refLevel) { b.refLevel = ''; n += 1; } });
+    if (n && S.page) {
+      view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
+    }
+    return n;
+  }
+
   function setSel(id, opts) {
     var focus = !(opts && opts.focus === false);
     S.selId = id;
     view.setSelId(id);
-    // focus:false 时只换选中态，不动画布视角（删框后就该这样）
+    // focus:false 时只换选中态，不动画布视角（删框/新建框后就该这样）
     if (focus && id != null) { var b = selBox(); if (b) { view.ensureVisible(b); } }
-    renderInspector(); renderHint();
+    if (!(opts && opts.keepDash)) { clearRefDashes(); }
+    renderInspector(); renderHint(); renderRef();
   }
   function stepSel(dir) {
     var ord = readingOrder();
@@ -513,7 +526,7 @@
     S.tempId += 1;
     mutate(function () { S.boxes.push(nb); S.selId = nb.id; });
     view.setArmed(false);
-    setSel(nb.id);
+    setSel(nb.id, { focus: false });   // 新建框后不要把画布甩到这个框上
     toast('已新建框', 'ok');
   }
   function toggleArmed() {
@@ -766,7 +779,7 @@
     var cur = selBox();
     var i = lows.indexOf(cur);
     var n = lows[(i + 1) % lows.length];
-    setSel(n.id);
+    setSel(n.id, { keepDash: true });
   }
 
   function muted(text) { return el('div', 'muted pad', text); }
@@ -1281,7 +1294,7 @@
     view = new window.YI.CanvasView({
       canvas: $('#cv'),
       wrap: $('#canvasWrap'),
-      onSelect: function (id) { setSel(id); },
+      onSelect: function (id) { setSel(id); },   // 点选后全局虚线自动消失
       onEditStart: function () { S.lastSnap = snapshot(); pushUndo(); },
       onEditChange: function () {
         setSaveState('dirty');
