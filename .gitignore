@@ -42,3 +42,7 @@ data/glyphbank/raw_index.json
 # raw scans are huge
 scans/*.tif
 scans/*.tiff
+
+# learned segmentation params are per-user (one-click learn)
+data/calibration/*.json
+data/calibration/REPORT.md

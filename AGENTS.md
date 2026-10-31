@@ -135,3 +135,14 @@
   参数 cut_base 0.6 / ps_w_ratio 1.7 / core_frac_min 0.22 / tall_split true / ratio 1.45。
   holdout 0003_left：746 -> 767 框（无膨胀）。pipeline 与 CLI 都会读校准文件；exe 内实测 577 框（默认 520）。
 - 坑：pipeline 里用了 log 但没定义 logging.getLogger -> process 直接 NameError，已补。
+
+## 一键学习（2026-10-31 晚8）
+- 用户要求：学习能力进仓库，**学习结果不上传**；每次学习不要重打整包 → 做成程序内按钮。
+- app/learn.py: learn_from_page(store,pid) 以 boxes.json 为标准答案，1/4 图粗搜 6 参数 + 整页 tall_split 试 2 组，
+  写 %LOCALAPPDATA%\yi-segment\calibration\segment_params.json，pipeline.calibration_params() 优先读它 → 立即生效、无需重装。
+  实测（exe 内）：F1 0.6434 -> 0.8405，27s；/api/learn 任务 + /api/calibration 查询。
+- UI：顶栏「一键学习」（确认框）；设置 → 关于显示当前学习参数。
+- 学习结果不再入库：data/calibration/*.json + REPORT.md 进 .gitignore，目录只留 README；打 exe 前删掉本机学习文件（否则会打进 runtime）。
+- 扫描黑边：segment_v1._clear_dark_edge_bands（贴边、成条、墨密度>0.35 的列带直接清掉，参数 edge_clean/edge_band_frac/edge_band_ink）。
+  0003_left 黑边假框 170+ -> 0；总框数 746 -> 563（人工 596）。
+- 多页学习脚本：scripts/learn_from_correction.py --pair EXPORT:TIF（可重复）。3 页结果：mean F1 0.8001 -> 0.8281。

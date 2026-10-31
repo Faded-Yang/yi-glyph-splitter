@@ -29,6 +29,7 @@ from . import jobs as jobs_mod
 from . import paths
 from . import pipeline
 from . import buildinfo
+from . import learn as learn_mod
 from . import store as store_mod
 from .store import ProjectStore, StoreError
 
@@ -373,6 +374,43 @@ def _refcheck_job(app: FastAPI, pid: str):
                 "proposals": len(res.get("proposals") or [])}
 
     return fn
+
+
+def _learn_job(app: FastAPI, pid: str):
+    """Background job: learn segmentation params from this page's edited boxes."""
+    st: ProjectStore = app.state.store
+
+    def fn(job):
+        def progress(frac, message):
+            try:
+                job.progress(int(round(float(frac) * 100)), 100, message)
+            except Exception:
+                pass
+        try:
+            res = learn_mod.learn_from_page(st, pid, progress_cb=progress, cancel_cb=job.is_canceled)
+        except store_mod.StoreError as exc:
+            raise RuntimeError(str(exc))
+        job.add_result({"pid": pid, "profile": res})
+        return {"pid": pid, "profile": res}
+
+    return fn
+
+
+def _calibration_info() -> dict:
+    fp = pipeline.calibration_file()
+    info = {"file": fp, "params": {}, "learned_at": "", "source_page": ""}
+    if not fp:
+        return info
+    try:
+        data = json.loads(open(fp, encoding="utf-8").read())
+        info.update({"params": data.get("params") or {},
+                     "learned_at": data.get("learned_at") or "",
+                     "source_page": data.get("source_page") or ((data.get("pages") or [{}])[0].get("export") if data.get("pages") else ""),
+                     "before": data.get("before") or {},
+                     "after": data.get("after") or {}})
+    except Exception:  # noqa: BLE001
+        pass
+    return info
 
 
 def _page_columns(store, pid) -> list:
@@ -720,6 +758,26 @@ def create_app(project_dir: str = "") -> FastAPI:
         job_id = request.app.state.jobs.submit(
             "refcheck", _refcheck_job(request.app, pid), total=1,
             message="排队中：规范字校验", meta={"pid": pid})
+        return {"job_id": job_id, "pid": pid}
+
+    @app.get("/api/calibration")
+    def api_calibration():
+        return _calibration_info()
+
+    @app.post("/api/learn")
+    def api_learn(request: Request, body: Any = Body(default_factory=dict)):
+        """一键学习：用当前页人工修正过的框反推分割参数（写入用户校准文件，不用重装）。"""
+        store: ProjectStore = request.app.state.store
+        data = body if isinstance(body, dict) else {}
+        pid = data.get("pid") or ""
+        if not pid:
+            st0 = _state(request.app)
+            pages = st0.get("pages") or []
+            pid = pages[0]["id"] if pages else ""
+        if not pid or not store.has_page(pid):
+            raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
+        job_id = request.app.state.jobs.submit("learn", _learn_job(request.app, pid), total=1,
+                                               message="学习分割参数")
         return {"job_id": job_id, "pid": pid}
 
     @app.put("/api/pages/{pid}/columns")

@@ -33,6 +33,11 @@ class Params:
     min_comp_area: int = 90      # px (full-res)
     dark_frac_min: float = 0.28  # fraction of dark pixels inside a component
     border_frac: float = 0.008   # ignore ink closer than this to the page edge
+    # --- scanner-edge dark bands (binding shadow / black scan edge) ----------
+    edge_clean: bool = True
+    edge_band_frac: float = 0.07   # only look at this fraction of the width near a side
+    edge_band_ink: float = 0.35    # column ink fraction that makes it a solid dark band
+    edge_band_gap: int = 30        # bridge gaps up to this many px inside a band
     max_comp_side: float = 1.75  # drop components with bbox side > this * glyph width
     max_comp_area: float = 6.0   # drop components with area > this * glyph_width^2
     rule_len_ratio: float = 3.0  # drop thin components longer than this * glyph width
@@ -99,6 +104,53 @@ def _prep(img: np.ndarray, p: Params):
 
 
 # ------------------------------------------------------------ components
+def _clear_dark_edge_bands(mask: np.ndarray, p: "Params") -> np.ndarray:
+    """Wipe solid dark bands hugging the left/right page edge.
+
+    Scans often carry a black scanner edge or the binding shadow; components
+    inside it are dark and tall, survive the ink filters, and steal a whole
+    column band from the real text (0003_left: ~170 bogus boxes on the strip).
+    """
+    h, w = mask.shape
+    if not p.edge_clean or w < 200:
+        return mask
+    col = mask.mean(axis=0).astype(np.float32)
+    k = max(3, w // 400)
+    ker = np.ones(k, np.float32) / float(k)
+    col_s = np.convolve(col, ker, mode="same")
+    limit = max(8, int(w * p.edge_band_frac))
+    out = mask.copy()
+    cleared = 0
+    for side in ("left", "right"):
+        if side == "left":
+            lo, hi = 0, min(limit, w)
+        else:
+            lo, hi = max(0, w - limit), w
+        x = lo
+        while x < hi:
+            if col_s[x] <= p.edge_band_ink:
+                x += 1
+                continue
+            end = x
+            gap = 0
+            probe = x + 1
+            while probe < hi:
+                if col_s[probe] > p.edge_band_ink:
+                    end = probe
+                    gap = 0
+                else:
+                    gap += 1
+                    if gap > p.edge_band_gap:
+                        break
+                probe += 1
+            out[:, x:end + 1] = False
+            cleared += end + 1 - x
+            x = end + 1
+    if cleared and p.verbose:
+        print("edge bands cleared: %d px columns" % cleared)
+    return out
+
+
 def _component_stats(mask: np.ndarray, flat: np.ndarray, p: Params):
     n, lab, stats, cent = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
     if n <= 1:
@@ -449,6 +501,7 @@ def segment_page(gray: np.ndarray, *, base_scale: float = 1.0, params: Params | 
         mask[:, :bm] = False
         mask[:, -bm:] = False
 
+    mask = _clear_dark_edge_bands(mask, p)
     lab, stats, cent, areas, dark_frac, cflat = _component_stats(mask, flat, p)
     glyph_w = _estimate_glyph_w(mask)
     keep = _component_keep(stats, areas, dark_frac, p, glyph_w)

@@ -924,7 +924,7 @@
 
   // ------------------------------------------------------------------ 任务
   function kindLabel(k) {
-    return { process: '一键处理', export: '一键切图', refcheck: '规范字校验' }[k] || (k || '任务');
+    return { process: '一键处理', export: '一键切图', refcheck: '规范字校验', learn: '学习分割参数' }[k] || (k || '任务');
   }
 
   function renderJobbar() {
@@ -1195,6 +1195,7 @@
     $('#setOrder').value = def.order || 'visual';
     $('#setFmt').value = def.fmt || 'png';
     $('#setProjectPath').value = (S.project && S.project.path) || '';
+    loadCalibrationInfo();
     var ab = document.getElementById('aboutBuild');
     if (ab) {
       var bd = S.build || '';
@@ -1352,6 +1353,43 @@
     }
   }
 
+  async function loadCalibrationInfo() {
+    var el = document.getElementById('calibInfo');
+    if (!el) { return; }
+    try {
+      var info = await API.get('/api/calibration');
+      var params = (info && info.params) || {};
+      var keys = Object.keys(params);
+      if (!keys.length) {
+        el.textContent = '学习参数：未学习（用默认参数）';
+        return;
+      }
+      var txt = keys.map(function (k) { return k + '=' + params[k]; }).join(' ');
+      el.textContent = '学习参数：' + txt + (info.learned_at ? ('（' + info.learned_at + (info.source_page ? ' · ' + info.source_page : '') + '）') : '');
+    } catch (e) { el.textContent = '学习参数：读取失败'; }
+  }
+
+  async function startLearn() {
+    var pid = S.pageId;
+    if (!pid) { toast('先在左栏选一页', 'warn'); return; }
+    if (!S.boxes.length) { toast('这一页还没有框，先处理', 'warn'); return; }
+    if (!window.confirm('用「' + ((pageById(pid) || {}).name || pid) + '」当前的 ' + S.boxes.length + ' 个框作为标准答案，
+重新学习分割参数？
+
+会覆盖现有学习结果（可随时再用别的页学）。')) { return; }
+    if (S.dirty) { try { await flushSave(); } catch (e) { /* ignore */ } }
+    var res;
+    try { res = await API.post('/api/learn', { pid: pid }); }
+    catch (e) { toast('启动学习失败', 'err', e.message); return; }
+    var rec = await trackJob(res.job_id, { kind: 'learn', label: '学习分割参数', pageIds: [pid] });
+    if (!rec || rec.state !== 'done') { return; }
+    var prof = ((rec.results || [])[0] || {}).profile || {};
+    var b = prof.before || {}, af = prof.after || {};
+    toast('学习完成：F1 ' + (b.f1 != null ? b.f1.toFixed(3) : '?') + ' → ' + (af.f1 != null ? af.f1.toFixed(3) : '?'), 'ok');
+    await loadCalibrationInfo();
+    toast('参数已保存，下次「一键处理」自动用它（无需重装）', 'ok');
+  }
+
   function bindAll() {
     $('#btnImportFiles').addEventListener('click', importFiles);
     $('#btnImportFolder').addEventListener('click', importFolder);
@@ -1363,6 +1401,8 @@
       confirmDialog('一键处理', text, function () { startProcess(ids.length ? ids : 'all'); });
     });
     $('#btnExport').addEventListener('click', openExport);
+    var bl = document.getElementById('btnLearn');
+    if (bl) { bl.addEventListener('click', startLearn); }
     $('#btnSettings').addEventListener('click', openDrawer);
     $('#jobCancel').addEventListener('click', cancelJob);
 
