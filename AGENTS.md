@@ -161,3 +161,9 @@
   ensure_columns 还做 _merge_slivers：<90px 的噪声列与较宽邻列合并（0003_left 19 列含 40px 细条 -> 16 列 min 213）。
 - 加删线：双击分列线=删除；Shift+点击列内=加线（capture 监听 + stopImmediatePropagation）；右栏「+ 加分列 / − 删分列」按鼠标位置操作。
 - 验证（打包 exe 内 CDP）：16 列时拖第 5 条只动该条（changed=[5]）；加线 16->17、删线 17->16、双击删 16->15。
+## 分列线交互改版（2026-10-31 晚11）
+- 用户批评：把鼠标移到线上再点右栏按钮做不到（只有一个鼠标）→ 改成**单击线选中（变黄）+ 按钮删除**。
+- 用户要求：图片区域**双击不要有任何动作**（原 dblclick→resetView 已整个删掉；canvas 上已无 dblclick 监听）。
+- 现交互：拖线=调边界；单击线=选中(selCol，黄色3px)；「− 删分列」删选中线；「+ 加分列」在有选中框时切该框所在列，否则切最宽列；Shift+点击列内=按点加线；「重置分列」重算。
+- 实现：canvas _down 记录 x0/moved，_up 未移动则 selCol=idx 并回调 onColumnSelect；app 侧 S.colSel + updateColSelUi() 更新 #colSelInfo。
+- 验证（打包 exe 内）：单击第 3 条选中(selCol=3)、删除 16->15、加分列 15->16、双击后 zoom/列数不变。

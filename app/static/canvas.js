@@ -25,7 +25,7 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
     this.fitScale = 1; this.zoom = 1; this.scale = 1; this.tx = 0; this.ty = 0;
     this.mode = 'idle'; this.drag = null; this.create = null;
     this.space = false; this.armed = false;
-    this.hoverId = null; this.mouse = null;
+    this.hoverId = null; this.mouse = null; this.selCol = -1;
     this.showCols = true; this.hoverCol = -1;
     this.raf = 0;
     this._bind();
@@ -302,17 +302,7 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
     this.canvas.addEventListener('pointerup', function (e) { self._up(e); });
     this.canvas.addEventListener('pointercancel', function (e) { self._up(e); });
     this.canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-    this.canvas.addEventListener('dblclick', function (e) {
-      var p = self.screenPos(e);
-      var ci = self._colBoundaryAt(p.x);
-      if (ci > 0 && ci < self._colBounds().length - 1) {
-        e.preventDefault();
-        if (self.opts.onColumnDelete) { self.opts.onColumnDelete(ci); }
-        return;
-      }
-      e.preventDefault();
-      self.resetView();
-    });
+
     this.canvas.addEventListener('pointerdown', function (e) {
       if (!e.shiftKey) { return; }
       var p = self.screenPos(e);
@@ -366,9 +356,14 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
     var ci = this._colBoundaryAt(p.x);
     if (ci >= 0 && !this.space) {
       this.mode = 'col';
-      this.drag = { idx: ci };
+      this.drag = { idx: ci, x0: p.x, moved: false };
       this.invalidate();
       return;
+    }
+    if (this.selCol !== -1) {
+      this.selCol = -1;
+      if (this.opts.onColumnSelect) { this.opts.onColumnSelect(-1); }
+      this.invalidate();
     }
     if (ev.button === 1 || this.space) {
       this.mode = 'pan';
@@ -431,6 +426,8 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
       return;
     }
     if (this.mode === 'col') {
+      if (!this.drag.moved && Math.abs(p.x - this.drag.x0) < 3) { return; }
+      this.drag.moved = true;
       var cols = this._sortedColumns();
       var idx = this.drag.idx;
       if (idx > 0 && idx < cols.length) {
@@ -484,10 +481,16 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
   View.prototype._up = function (ev) {
     var was = this.mode;
     if (was === 'col') {
+      var d = this.drag;
       this.mode = 'idle';
       this.drag = null;
-      if (this.opts.onColumnsChange) {
-        this.opts.onColumnsChange(this.data.columns.map(function (c) { return { x0: c.x0, x1: c.x1 }; }));
+      if (d && d.moved) {
+        if (this.opts.onColumnsChange) {
+          this.opts.onColumnsChange(this.data.columns.map(function (c) { return { x0: c.x0, x1: c.x1 }; }));
+        }
+      } else if (d) {
+        this.selCol = this.selCol === d.idx ? -1 : d.idx;
+        if (this.opts.onColumnSelect) { this.opts.onColumnSelect(this.selCol); }
       }
       this.invalidate();
       return;
@@ -628,7 +631,9 @@ var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40p
     for (var i = 0; i < bs.length; i++) {
       var x = Math.round(bs[i] * this.scale + this.tx) + 0.5;
       if (x < -2 || x > this.cw + 2) { continue; }
-      ctx.strokeStyle = (i === this.hoverCol) ? 'rgba(250,204,21,1)' : 'rgba(56,189,248,0.9)';
+      ctx.lineWidth = (i === this.selCol) ? 3 : (i === this.hoverCol ? 2 : 1.6);
+      ctx.strokeStyle = (i === this.selCol) ? '#facc15'
+        : ((i === this.hoverCol) ? 'rgba(250,204,21,1)' : 'rgba(56,189,248,0.9)');
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, this.ch);

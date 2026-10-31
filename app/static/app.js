@@ -25,7 +25,7 @@
     hist: [], redo: [], lastSnap: '',
     dirty: false, saveState: 'idle', saveTimer: null, saving: false,
     jobs: {}, jobOrder: [], jobProgress: {}, pollTimer: null, activeJobId: null,
-    refby: {}, refStats: null, glyphbank: true, refJobPid: null, showCols: true,
+    refby: {}, refStats: null, glyphbank: true, refJobPid: null, showCols: true, colSel: -1,
     previewW: 1600, previewToken: 1, previewRebuildTried: -1, detailTimer: null, detailRect: null,
     checked: {}, filter: '', armed: false, modalOpen: null,
     tempId: 1, lastExportOut: ''
@@ -1342,8 +1342,7 @@
     if (addBtn) {
       addBtn.addEventListener('click', function () {
         if (!S.pageId) { toast('先选一页', 'warn'); return; }
-        var x = (view.mouse && view.mouse.x != null) ? view.mouse.x : ((S.page && (S.page.w || S.page.width)) || 0) / 2;
-        view.opts.onColumnAdd(x);
+        view.opts.onColumnAdd(null);   // 有选中框就切它所在的列，否则切最宽列
       });
     }
     var delBtn = document.getElementById('btnColDel');
@@ -1352,14 +1351,13 @@
         if (!S.pageId) { toast('先选一页', 'warn'); return; }
         var cols = sortedCols();
         if (cols.length < 2) { toast('至少要有两条线才能删', 'warn'); return; }
-        var mx = (view.mouse && view.mouse.x != null) ? view.mouse.x : null;
-        if (mx == null) { toast('把鼠标移到要删的那条线上再点', 'warn'); return; }
-        var best = -1, bestD = null;
-        for (var i = 1; i < cols.length; i++) {
-          var d = Math.abs(cols[i].x0 - mx);
-          if (bestD === null || d < bestD) { bestD = d; best = i; }
+        if (S.colSel == null || S.colSel <= 0 || S.colSel >= cols.length) {
+          toast('先在图上点一下那条分列线（单击会变黄），再点这里删除', 'warn');
+          return;
         }
-        view.opts.onColumnDelete(best);
+        view.opts.onColumnDelete(S.colSel);
+        S.colSel = -1;
+        updateColSelUi();
       });
     }
     var r = document.getElementById('btnColsReset');
@@ -1431,6 +1429,13 @@
       renderPageInfo();
       toast(okText || '分列已更新', 'ok');
     }).catch(function (e) { toast('保存分列失败', 'err', e.message); });
+  }
+
+  function updateColSelUi() {
+    var hint = document.getElementById('colSelInfo');
+    if (hint) {
+      hint.textContent = (S.colSel != null && S.colSel >= 0) ? ('已选中第 ' + S.colSel + ' 条分列线（点「− 删分列」删除）') : '单击图上的分列线可选中（变黄），再点「− 删分列」';
+    }
   }
 
   function bindAll() {
@@ -1615,6 +1620,7 @@
       onColumnsChange: function (cols) {
         saveColumns(cols, '分列已更新（编号与导出顺序按新分列）');
       },
+      onColumnSelect: function (idx) { S.colSel = idx; updateColSelUi(); },
       onColumnDelete: function (ci) {
         var cols = sortedCols();
         if (ci <= 0 || ci >= cols.length) { return; }
@@ -1625,16 +1631,28 @@
       onColumnAdd: function (imgX) {
         var cols = sortedCols();
         if (!cols.length) { toast('这一页还没有分列数据', 'warn'); return; }
+        var x = imgX;
+        if (x == null || isNaN(x)) {
+          var b = selBox();
+          if (b) {
+            x = Math.round((b.x0 + b.x1) / 2);
+          } else {
+            var widest = cols[0];
+            for (var w = 1; w < cols.length; w++) {
+              if ((cols[w].x1 - cols[w].x0) > (widest.x1 - widest.x0)) { widest = cols[w]; }
+            }
+            x = Math.round((widest.x0 + widest.x1) / 2);
+          }
+        }
         var i = -1;
         for (var k = 0; k < cols.length; k++) {
-          if (imgX >= cols[k].x0 && imgX <= cols[k].x1) { i = k; break; }
+          if (x >= cols[k].x0 && x <= cols[k].x1) { i = k; break; }
         }
-        if (i < 0) { toast('点在某一列内部才能加线', 'warn'); return; }
+        if (i < 0) { toast('这个位置不在任何列内', 'warn'); return; }
         var c0 = cols[i];
-        var x = Math.round(imgX);
         var MINW = 90;
         if (x - c0.x0 < MINW || c0.x1 - x < MINW) {
-          toast('太窄了：两侧各至少 ' + MINW + ' px', 'warn');
+          toast('太窄了：新线两侧各至少 ' + MINW + ' px', 'warn');
           return;
         }
         var out = cols.slice(0, i)
