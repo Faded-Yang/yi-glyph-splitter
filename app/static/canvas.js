@@ -487,9 +487,14 @@
       r = this.rectToScreen(b.x0, b.y0, b.x1, b.y1);
       if (r.x + r.w < -4 || r.y + r.h < -4 || r.x > this.cw + 4 || r.y > this.ch + 4) { continue; }
       sel = b.id === d.selId;
-      var lowref = b.refLevel === 'low';
-      var col = sel ? '#ef4444' : (b.review === 1 ? '#22c55e' : (b.review === 2 ? '#f59e0b' :
-                (lowref ? '#fb7185' : '#22d3ee')));
+      // 全部实线、常驻：人工自选色 > 已确认/存疑 > 规范字匹配等级
+      var lvl = b.refLevel || '';
+      var manual = b.color || '';
+      var col = sel ? '#ef4444'
+        : (manual ? manual
+          : (b.review === 1 ? '#22c55e'
+            : (b.review === 2 ? '#f59e0b'
+              : (lvl === 'strong' ? '#22c55e' : (lvl === 'low' ? '#f87171' : '#22d3ee')))));
       if (sel) {
         ctx.fillStyle = 'rgba(239,68,68,0.10)';
         ctx.fillRect(r.x, r.y, r.w, r.h);
@@ -499,7 +504,7 @@
       }
       ctx.globalAlpha = (sel || b.review !== 0) ? 1 : 0.9;
       ctx.strokeStyle = col;
-      ctx.setLineDash((lowref && !sel) ? [5, 3] : []);
+      ctx.setLineDash([]);
       ctx.lineWidth = sel ? 2 : (this.hoverId === b.id ? 2 : 1.25);
       ctx.strokeRect(rnd(r.x) + 0.5, rnd(r.y) + 0.5, rnd(r.w), rnd(r.h));
       ctx.setLineDash([]);

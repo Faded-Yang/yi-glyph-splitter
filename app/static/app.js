@@ -256,7 +256,8 @@
       x1: Math.round(num(b.x1, 0)), y1: Math.round(num(b.y1, 0)),
       flags: Array.isArray(b.flags) ? b.flags.slice() : [],
       review: b.review ? (b.review | 0) : 0,
-      note: b.note || ''
+      note: b.note || '',
+      color: b.color || ''
     };
   }
 
@@ -329,7 +330,8 @@
     var payload = S.boxes.map(function (b) {
       return {
         x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1,
-        flags: b.flags || [], review: b.review || 0, note: b.note || ''
+        flags: b.flags || [], review: b.review || 0, note: b.note || '',
+        color: b.color || ''
       };
     });
     S.saving = true;
@@ -456,6 +458,15 @@
     var n = i < 0 ? ord[0] : ord[clamp(i + dir, 0, ord.length - 1)];
     setSel(n.id);
   }
+  function setBoxColor(hex) {
+    var b = selBox();
+    if (!b) { toast('先选中一个框', 'warn'); return; }
+    var v = hex || '';
+    if ((b.color || '') === v) { return; }
+    mutate(function () { b.color = v; });
+    toast(v ? '已标记颜色' : '已恢复自动颜色', 'ok');
+  }
+
   function setReview(v) {
     var b = selBox();
     if (!b) { toast('先选中一个框', 'warn'); return; }
@@ -710,7 +721,7 @@
   }
 
   function levelLabel(lv) {
-    return { good: '像规范字', warn: '一般', low: '可疑' }[lv] || '未校验';
+    return { strong: '很标准', good: '像规范字', warn: '一般', low: '可疑' }[lv] || '未校验';
   }
 
   function renderRef() {
@@ -752,7 +763,11 @@
       card.appendChild(el('span', 'lb', t.label));
       grid.appendChild(card);
     });
-    hint.textContent = info.level === 'low'
+    if (info.level === 'strong') {
+      hint.textContent = '与标准字形高度吻合（' + info.score.toFixed(2) + '），基本可以放心。';
+      return;
+    }
+    hint.textContent = info.level === 'low' 
       ? '最像的标准字形也只有 ' + info.score.toFixed(2) + '：这个框很可能不是一个规范彝文字（两字粘连 / 只剩笔画碎片）。'
       : (info.level === 'good' ? '与标准字形吻合，基本可以确认是一个字。'
                                : '与标准字形部分吻合，建议对照右侧标准字形再确认一下。');
@@ -1301,6 +1316,11 @@
     $('#btnRemove').addEventListener('click', removeChecked);
 
     $('#btnConfirm').addEventListener('click', function () { setReview(1); });
+    Array.prototype.forEach.call(document.querySelectorAll('.swatch[data-color]'), function (el) {
+      el.addEventListener('click', function () { setBoxColor(el.getAttribute('data-color')); });
+    });
+    var bc = document.getElementById('btnColorClear');
+    if (bc) { bc.addEventListener('click', function () { setBoxColor(''); }); }
     $('#btnSuspect').addEventListener('click', function () { setReview(2); });
     $('#btnReset').addEventListener('click', function () { setReview(0); });
     $('#btnDelete').addEventListener('click', deleteSel);

@@ -79,9 +79,11 @@
           <span class="dim" id="hintPos">—</span>
           <span class="legend">
             <i class="lg normal"></i>普通
+            <i class="lg strong"></i>很标准
             <i class="lg ok"></i>已确认
             <i class="lg warn"></i>存疑
-            <i class="lg lowref"></i>低分
+            <i class="lg lowref"></i>可疑
+            <i class="lg manual"></i>自选色
             <i class="lg sel"></i>选中
           </span>
           <span class="spacer"></span>
@@ -127,13 +129,23 @@
             <button class="btn" id="btnAdd" title="新建框：在画布上拖框（A）">添加</button>
             <button class="btn danger" id="btnDelete" title="删除（Del）">删除</button>
           </div>
+          <div class="color-row">
+            <span class="dim">手动标记</span>
+            <button class="swatch" data-color="#22d3ee" style="background:#22d3ee" title="青色"></button>
+            <button class="swatch" data-color="#22c55e" style="background:#22c55e" title="绿色"></button>
+            <button class="swatch" data-color="#f59e0b" style="background:#f59e0b" title="琥珀"></button>
+            <button class="swatch" data-color="#f87171" style="background:#f87171" title="红色"></button>
+            <button class="swatch" data-color="#a855f7" style="background:#a855f7" title="紫色"></button>
+            <button class="swatch" data-color="#3b82f6" style="background:#3b82f6" title="蓝色"></button>
+            <button class="btn tiny" id="btnColorClear" title="恢复按规范字自动上色">自动</button>
+          </div>
         </div>
       </div>
 
       <div class="section">
         <h3><span>规范字对照</span><span class="muted" id="refSum"></span></h3>
         <div class="refgrid" id="refGrid"></div>
-        <div class="dim" id="refHint">处理完一页会自动对照规范字库打分，低分框用红色虚线常驻；改/新建一个框只重算那一框。</div>
+        <div class="dim" id="refHint">处理完一页自动打分：绿色=很符合规范字，红色=可疑，青色=一般；改/新建一个框只重算那一框。</div>
         <div class="ai-headrow" style="margin-top:8px">
           <span class="pill" id="refLevel">未校验</span>
           <button class="btn tiny" id="btnNextLow" title="跳到下一个低分框">下一个低分</button>

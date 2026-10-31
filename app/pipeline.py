@@ -296,7 +296,9 @@ def score_boxes(store, pid: str, boxes) -> list:
             continue
         m = yi_ref.score_tile(gray[y0:y1, x0:x1])
         score = float(m.get("score") or 0.0)
-        level = "good" if score >= yi_ref.GOOD else ("warn" if score >= yi_ref.WARN else "low")
+        level = ("strong" if score >= yi_ref.STRONG else
+                 "good" if score >= yi_ref.GOOD else
+                 "warn" if score >= yi_ref.WARN else "low")
         out.append({"id": b.get("id"), "score": round(score, 4), "level": level,
                     "top": m.get("top") or []})
     return out
@@ -408,6 +410,36 @@ def _page_columns(page: dict, boxes: list) -> list:
     return out
 
 
+
+def _ref_low_boxes(store, pid) -> list:
+    """Boxes that the last reference-check marked as low (matched by geometry)."""
+    data = store.refcheck(pid)
+    items = data.get("boxes") or []
+    out = []
+    for it in items:
+        if str(it.get("level")) != "low":
+            continue
+        box = it.get("box")
+        if not box or len(box) != 4:
+            continue
+        out.append((float(box[0]), float(box[1]), float(box[2]), float(box[3])))
+    return out
+
+
+def _is_low_box(b, ref_low) -> bool:
+    ax0, ay0, ax1, ay1 = float(b["x0"]), float(b["y0"]), float(b["x1"]), float(b["y1"])
+    for (bx0, by0, bx1, by1) in ref_low:
+        ix = max(0.0, min(ax1, bx1) - max(ax0, bx0))
+        iy = max(0.0, min(ay1, by1) - max(ay0, by0))
+        inter = ix * iy
+        if inter <= 0:
+            continue
+        union = (ax1 - ax0) * (ay1 - ay0) + (bx1 - bx0) * (by1 - by0) - inter
+        if union > 0 and inter / union >= 0.6:
+            return True
+    return False
+
+
 def page_dict_for_export(store, pid, boxes) -> dict:
     """Assemble the minimal page dict export_tiles() needs, from current boxes."""
     page = store.load_page_json(pid)
@@ -429,10 +461,19 @@ def page_dict_for_export(store, pid, boxes) -> dict:
                 best, bestd = i, d
         return best
 
+    ref_low = _ref_low_boxes(store, pid)
     glyphs = []
-    for b in boxes:
+    for b in boxes:            # 每一框都导出，可疑框也只是标记，不做过滤
+        flags = list(b.get("flags") or [])
+        review = store_mod._int(b.get("review"), 0)
+        if review == 1:
+            flags.append("confirmed")
+        elif review == 2:
+            flags.append("suspect")
+        if ref_low and _is_low_box(b, ref_low):
+            flags.append("lowref")
         g = {"id": store_mod._int(b.get("id"), 1), "x0": b["x0"], "y0": b["y0"],
-             "x1": b["x1"], "y1": b["y1"], "flags": list(b.get("flags") or []),
+             "x1": b["x1"], "y1": b["y1"], "flags": flags,
              "col": col_of(b)}
         glyphs.append(g)
     return {"width": W, "height": H, "columns": cols, "glyphs": glyphs}

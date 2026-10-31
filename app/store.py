@@ -178,8 +178,13 @@ def normalize_box(box, width=None, height=None):
     if review not in REVIEW_ALLOWED:
         review = 2 if review >= 2 else (1 if review == 1 else 0)
     note = str(box.get("note") or "").strip()[:MAX_NOTE]
+    # 人工手动标记的颜色（可选）：#rrggbb；非法值直接丢掉
+    color = str(box.get("color") or "").strip().lower()
+    if color and not re.match(r"^#[0-9a-f]{6}$", color):
+        color = ""
     return {"x0": x0, "y0": y0, "x1": x1, "y1": y1,
-            "flags": clean_flags[:MAX_FLAGS], "review": review, "note": note}, warns
+            "flags": clean_flags[:MAX_FLAGS], "review": review, "note": note,
+            "color": color}, warns
 
 
 def normalize_boxes(boxes, width=None, height=None):
@@ -213,7 +218,7 @@ def boxes_from_glyphs(glyphs, width=None, height=None):
         if not isinstance(g, dict):
             continue
         b = {"x0": g.get("x0"), "y0": g.get("y0"), "x1": g.get("x1"), "y1": g.get("y1"),
-             "flags": list(g.get("flags") or []), "review": 0, "note": ""}
+             "flags": list(g.get("flags") or []), "review": 0, "note": "", "color": ""}
         if g.get("id") is not None:
             b["id"] = _int(g.get("id"), i + 1)
         boxes.append(b)

@@ -329,3 +329,13 @@ kbd { font-family: Consolas, ui-monospace, monospace; font-size: 11px; padding: 
 .pill.ref-warn { background: rgba(245,158,11,.18); color: #fcd34d; }
 .pill.ref-low  { background: rgba(239,68,68,.18);  color: #fca5a5; }
 .lg.lowref { background: #fb7185; }
+
+.lg.lowref-ok { background: #34d399; }
+
+/* ---- 手动标记颜色 ---- */
+.color-row { display: flex; align-items: center; gap: 6px; margin: 8px 0 2px; flex-wrap: wrap; }
+.color-row .dim { margin-right: 2px; }
+.swatch { width: 18px; height: 18px; border-radius: 50%; border: 1px solid rgba(15,23,42,.55); cursor: pointer; padding: 0; }
+.swatch:hover { transform: scale(1.12); }
+.lg.strong { background: #22c55e; }
+.lg.manual { background: #a855f7; }

@@ -25,6 +25,7 @@ SIDE = 48
 COARSE = 16
 TOP_K = 60          # coarse candidates re-ranked at 48x48
 SHOW_K = 3          # how many reference glyphs to show in the UI
+STRONG = 0.62       # >= this: matches a standard character very well (green box)
 GOOD = 0.50         # >= this: clearly matches a standard character
 WARN = 0.40         # >= this: plausible
 LOW = 0.38          # < this: suspicious (merge / fragment / junk)
@@ -176,9 +177,12 @@ def check_boxes(page_gray: np.ndarray, boxes: Sequence[dict], *,
     for b in boxes:
         m = at(b)
         score = m["score"]
-        level = "good" if score >= GOOD else ("warn" if score >= WARN else "low")
+        level = ("strong" if score >= STRONG else
+                 "good" if score >= GOOD else
+                 "warn" if score >= WARN else "low")
         out_boxes.append({"id": b.get("id"), "score": score, "level": level,
                           "top": m["top"],
+                          "box": [int(b["x0"]), int(b["y0"]), int(b["x1"]), int(b["y1"])],
                           "flags": list(b.get("flags") or [])})
 
     # --- merge proposals: adjacent boxes whose union matches markedly better
