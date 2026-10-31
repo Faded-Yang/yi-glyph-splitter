@@ -296,18 +296,99 @@ def run_refcheck(store, pid, progress_cb=None, cancel_cb=None) -> dict:
         raise store_mod.StoreError("这一页还没有框，先处理或手动框选")
 
     t0 = time.time()
-    _cb(progress_cb, 0.05, "读取灰度图")
+    _cb(progress_cb, 0.03, "读取灰度图")
     check_cancel(cancel_cb)
     gray = C.load_gray(src)
-    _cb(progress_cb, 0.20, "对照规范字库（%d 个框）" % len(boxes))
+
+    # 1) 先把这一页里「人工确认过」的框收进自建字库（更好的笔迹样本）
+    try:
+        added = harvest_confirmed(store, pid, gray)
+    except Exception:  # noqa: BLE001 - 收录失败不影响校验
+        added = 0
+    if added:
+        _cb(progress_cb, 0.12, "收录 %d 个自建字形" % added)
+
+    _cb(progress_cb, 0.20, "对照字库（标准 %d + 自建 %d 个框）" % (len(boxes), 0))
     result = yi_ref.check_boxes(gray, boxes)
     check_cancel(cancel_cb)
+
+    # 2) 统计「本页出现过几次」：按每个框 top1 的字形标签计数
+    counts = {}
+    for b in result.get("boxes") or []:
+        top = b.get("top") or []
+        lab = top[0].get("label") if top else ""
+        b["label"] = lab or ""
+        if lab:
+            counts[lab] = counts.get(lab, 0) + 1
+    for b in result.get("boxes") or []:
+        lab = b.get("label") or ""
+        b["label_count"] = int(counts.get(lab, 0))
+        for t in b.get("top") or []:
+            t["page_count"] = int(counts.get(t.get("label") or "", 0))
+    result["label_counts"] = counts
+
     result["pid"] = pid
     result["seconds"] = round(time.time() - t0, 2)
     result["boxes"] = result.get("boxes") or []
+    try:
+        from . import userbank
+        result["userbank"] = userbank.stats()
+    except Exception:  # noqa: BLE001
+        result["userbank"] = {"n": 0, "labels": {}}
     store.save_refcheck(pid, result)
     _cb(progress_cb, 1.0, "完成：%d 框，低分 %d" % (result["stats"]["n"], result["stats"]["low"]))
     return result
+
+
+def harvest_confirmed(store, pid: str, gray=None) -> int:
+    """Add the page's human-confirmed boxes (review=1) to the user glyph bank.
+
+    Their own handwriting is a better template than the printed manual, and the
+    bank grows every time they confirm boxes + re-run the check.
+    """
+    from . import userbank
+    from . import yi_ref
+
+    try:
+        boxes = store.boxes(pid)
+    except Exception:  # noqa: BLE001
+        return 0
+    # 用户明确要求：绿色(已确认)、蓝色(一般)、红色(可疑) 全部收录。
+    # 每条的 review / refLevel 都记在 meta 里，以后要按颜色筛选也有依据。
+    confirmed = list(boxes)
+    if not confirmed:
+        return 0
+    levels = {}
+    try:
+        rc = store.refcheck(pid)
+        for rb in rc.get("boxes") or []:
+            levels[rb.get("id")] = rb.get("level") or ""
+    except Exception:  # noqa: BLE001
+        pass
+    if gray is None:
+        gray = page_gray(store, pid)
+    entry = _require_page(store, pid)
+    page_name = entry.get("name") or pid
+    glyphs = []
+    for b in confirmed:
+        x0, y0, x1, y1 = int(b["x0"]), int(b["y0"]), int(b["x1"]), int(b["y1"])
+        tile = gray[y0:y1, x0:x1]
+        if tile.size == 0:
+            continue
+        ink = yi_ref.norm_ink(tile)
+        if int((ink > 0).sum()) < 20:
+            continue
+        try:
+            m = yi_ref.match(ink, k=1)
+            lab = (m.get("top") or [{}])[0].get("label") or ""
+        except Exception:  # noqa: BLE001
+            lab = ""
+        glyphs.append({"ink48": ink, "x0": x0, "y0": y0, "x1": x1, "y1": y1, "label": lab,
+                       "review": int(b.get("review") or 0),
+                       "level": str(levels.get(b.get("id")) or "")})
+    before = userbank.stats().get("n", 0)
+    after = userbank.add_glyphs(glyphs, page=page_name).get("n", 0)
+    return max(0, after - before)
 
 
 # --------------------------------------------------- per-box reference scoring

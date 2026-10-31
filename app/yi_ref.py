@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import threading
 from typing import Any, Optional, Sequence
@@ -20,6 +21,7 @@ import numpy as np
 from PIL import Image
 
 from . import paths
+from . import userbank
 
 SIDE = 48
 COARSE = 16
@@ -30,6 +32,7 @@ GOOD = 0.50         # >= this: clearly matches a standard character
 WARN = 0.40         # >= this: plausible
 LOW = 0.38          # < this: suspicious (merge / fragment / junk)
 
+USER_OFFSET = 1_000_000   # user-bank indices exposed to the UI start here
 _BANK: Optional[dict] = None
 _LOCK = threading.Lock()
 
@@ -114,8 +117,45 @@ def _unit(vec: np.ndarray) -> Optional[np.ndarray]:
     return v / n
 
 
-def match(ink48: np.ndarray, k: int = SHOW_K) -> dict:
-    """Return {score, best, top:[{idx,label,score}]} for one normalised ink map."""
+def _user_candidates(v16, v48, k: int, exclude=None) -> list:
+    """Best matches from the user's own confirmed cuts (empty when none).
+
+    exclude: set of (x0,y0,x1,y1) that must not be used as a match -- the box
+    itself is in the bank, and matching a glyph to itself would always score 1.0.
+    """
+    ub = userbank.load()
+    if not ub.get("n"):
+        return []
+    entries = ub.get("entries") or []
+    skip = set(exclude or ())
+    coarse = ub["f16"] @ v16
+    take = min(max(8, k * 3), ub["n"])
+    cand = np.argpartition(-coarse, take - 1)[:take]
+    fine = ub["f48"][cand] @ v48
+    order = np.argsort(-fine)[:k]
+    counts = userbank.label_counts()
+    out = []
+    for o in order:
+        i = int(cand[o])
+        if skip and i < len(entries):
+            e = entries[i] or {}
+            key = (e.get("x0"), e.get("y0"), e.get("x1"), e.get("y1"))
+            if key in skip:
+                continue
+        lab = str(ub["labels"][i]) if i < len(ub["labels"]) else ""
+        out.append({"idx": USER_OFFSET + i, "label": lab,
+                    "score": round(float(fine[o]), 4),
+                    "src": "user", "count": int(counts.get(lab, 0))})
+    return out
+
+
+def match(ink48: np.ndarray, k: int = SHOW_K, exclude=None) -> dict:
+    """Return {score, best, top:[{idx,label,score,src,count}]} for one ink map.
+
+    Candidates come from the standard bank AND the user's own confirmed glyphs;
+    the best of both wins, and each candidate carries how many times that glyph
+    has been collected (count) so the UI can show 出现过 N 次.
+    """
     bank = load()
     q16 = np.asarray(Image.fromarray(ink48).resize((COARSE, COARSE), Image.LANCZOS), np.uint8)
     v16 = _unit(q16.ravel())
@@ -128,9 +168,62 @@ def match(ink48: np.ndarray, k: int = SHOW_K) -> dict:
     fine = bank["f48"][cand] @ v48
     order = np.argsort(-fine)[:max(1, k)]
     top = [{"idx": int(cand[o]), "label": str(bank["labels"][cand[o]]),
-            "score": round(float(fine[o]), 4)} for o in order]
-    best = top[0]
-    return {"score": best["score"], "best": best["idx"], "top": top}
+            "score": round(float(fine[o]), 4), "src": "std", "count": 0} for o in order]
+    std_top = list(top)
+    std_score = float(std_top[0]["score"])
+    std_best = std_top[0]
+
+    # 自建库（你切好的字形）才是这本手稿的字体；标准库只是兜底。
+    # 得分 = max(标准库分, 自建库相似度 × 重复出现数权重)
+    repeat, sim, user_score, cid = 0, 0.0, 0.0, None
+    user_cands = []
+    try:
+        user_cands = _user_candidates(v16, v48, max(1, k), exclude)
+    except Exception:
+        user_cands = []
+    if user_cands:
+        ub_best = max(user_cands, key=lambda t: t["score"])
+        sim = float(ub_best["score"])
+        try:
+            from . import userbank as _ub
+            st = _ub.stats()
+            i = int(ub_best["idx"]) - USER_OFFSET
+            entries = _ub.load().get("entries") or []
+            cid = (entries[i] or {}).get("cluster") if i < len(entries) else None
+            repeat = int((st.get("cluster_sizes") or {}).get(cid, 1))
+        except Exception:
+            repeat = 1
+        f = min(1.0, math.log2(1 + max(0, repeat)) / math.log2(7.0))
+        user_score = sim * (0.75 + 0.25 * f)
+
+    score = round(min(0.99, max(std_score, user_score)), 4)
+    bonus = round(score - std_score, 4)
+    if user_score > std_score:
+        best = dict(std_best)
+        best["score"] = score
+        best["src"] = "user"
+        best["repeat"] = repeat
+        best["sim"] = round(sim, 4)
+        best["cluster"] = cid
+        best["bonus"] = bonus
+        best_idx = best["idx"]
+    else:
+        best = dict(std_best)
+        best["repeat"] = repeat
+        best["sim"] = round(sim, 4)
+        best["cluster"] = cid
+        best["bonus"] = bonus
+        best_idx = best["idx"]
+    top = std_top + user_cands
+    for t in top:
+        if t["idx"] == best_idx:
+            t["score"] = score
+    top.sort(key=lambda t: -t["score"])
+    top = top[:max(1, k)]
+    return {"score": score, "best": best_idx, "top": top,
+            "repeat": repeat, "sim": round(sim, 4), "cluster": cid,
+            "bonus": bonus, "std_score": std_score,
+            "user_score": round(user_score, 4)}
 
 
 def score_tile(gray: np.ndarray) -> dict:
@@ -139,10 +232,17 @@ def score_tile(gray: np.ndarray) -> dict:
 
 def ref_png(idx: int, scale: int = 4) -> bytes:
     """Reference glyph as a black-on-white PNG (for the UI thumbnails)."""
-    bank = load()
-    if not (0 <= idx < bank["n"]):
-        raise IndexError(idx)
-    ink = bank["refs48"][idx]
+    if int(idx) >= USER_OFFSET:
+        ub = userbank.load()
+        i = int(idx) - USER_OFFSET
+        if not (0 <= i < ub["n"]):
+            raise IndexError(idx)
+        ink = ub["refs48"][i]
+    else:
+        bank = load()
+        if not (0 <= idx < bank["n"]):
+            raise IndexError(idx)
+        ink = bank["refs48"][idx]
     img = 255 - ink                       # ink -> black
     img = cv2.resize(img, (SIDE * scale, SIDE * scale), interpolation=cv2.INTER_NEAREST)
     ok, buf = cv2.imencode(".png", img)
@@ -152,6 +252,10 @@ def ref_png(idx: int, scale: int = 4) -> bytes:
 
 
 def ref_label(idx: int) -> str:
+    if int(idx) >= USER_OFFSET:
+        ub = userbank.load()
+        i = int(idx) - USER_OFFSET
+        return str(ub["labels"][i]) if i < len(ub["labels"]) else ""
     return str(load()["labels"][idx])
 
 
@@ -171,7 +275,7 @@ def check_boxes(page_gray: np.ndarray, boxes: Sequence[dict], *,
         key = (box["x0"], box["y0"], box["x1"], box["y1"])
         if key not in cache:
             tile = page_gray[int(box["y0"]):int(box["y1"]), int(box["x0"]):int(box["x1"])]
-            cache[key] = match(norm_ink(tile))
+            cache[key] = match(norm_ink(tile), exclude=set([key]))
         return cache[key]
 
     for b in boxes:
@@ -180,10 +284,18 @@ def check_boxes(page_gray: np.ndarray, boxes: Sequence[dict], *,
         level = ("strong" if score >= STRONG else
                  "good" if score >= GOOD else
                  "warn" if score >= WARN else "low")
+        flags = list(b.get("flags") or [])
+        user_best = max([t.get("score", 0.0) for t in (m.get("top") or []) if t.get("src") == "user"] or [0.0])
+        if level == "low" and user_best >= 0.78:
+            level = "warn"          # 自建字库里有非常像的字形：是字，只是不像印刷体
+            flags.append("userbank")
         out_boxes.append({"id": b.get("id"), "score": score, "level": level,
-                          "top": m["top"],
+                          "top": m["top"], "user_best": round(float(user_best), 4),
+                          "repeat": int(m.get("repeat") or 0),
+                          "bonus": float(m.get("bonus") or 0.0),
+                          "std_score": float(m.get("std_score") or score),
                           "box": [int(b["x0"]), int(b["y0"]), int(b["x1"]), int(b["y1"])],
-                          "flags": list(b.get("flags") or [])})
+                          "flags": flags})
 
     # --- merge proposals: adjacent boxes whose union matches markedly better
     props = []

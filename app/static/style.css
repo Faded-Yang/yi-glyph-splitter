@@ -355,3 +355,8 @@ kbd { font-family: Consolas, ui-monospace, monospace; font-size: 11px; padding: 
 .splitter.s-left { left: var(--left-w, 266px); margin-left: -4px; }
 .splitter.s-right { right: var(--right-w, 352px); margin-right: -4px; }
 .splitter::after { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: rgba(148,163,184,.22); }
+
+/* ---- 自建字库对照卡片 ---- */
+.refcard .cnt { display: block; font-size: 10px; color: #94a3b8; margin-top: 1px; }
+.refcard.user img { border-color: #34d399; box-shadow: 0 0 0 1px rgba(52, 211, 153, .35); }
+.refcard.user .sc { color: #34d399; }

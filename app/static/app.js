@@ -692,6 +692,7 @@
 
   // ---------------------------------------------------------- 规范字对照（离线）
   function applyRefResult(r) {
+    S.refUser = (r && r.userbank) || ((r && r.result && r.result.userbank) || { n: 0, labels: {} });
     var res = (r && r.result) || {};
     var list = res.boxes || [];
     var by = {};
@@ -751,7 +752,9 @@
       if (sum) { sum.textContent = stat.good + ' 好 / ' + stat.low + ' 可疑 / ' + stat.n; }
       lv.textContent = '中位 ' + stat.median.toFixed(2) + ' · 低分 ' + stat.low + '/' + stat.n;
       lv.className = 'pill';
-      hint.textContent = '已校验：绿色=很符合规范字（≥0.62），红色=可疑（<0.38，可能两字粘连/残缺），青色=一般。点选一个框看它的对照字形。';
+      var ub = (S.refUser) ? (' · 自建字库 ' + S.refUser.n + ' 个字形') : '';
+      hint.textContent = '已校验：绿色=很符合规范字（≥0.62），红色=可疑（<0.38，可能两字粘连/残缺），青色=一般；分数会按「这个字形在你字库里出现过的次数」小幅加权（最多 +0.06）；'
+        + '每个对照字形下方是「本页出现过几次」' + ub + '。点选一个框看它的对照字形。';
       return;
     }
     if (!info) {
@@ -759,16 +762,20 @@
       hint.textContent = '这个框是校验之后新增/改动的，重新校验一次即可。';
       return;
     }
-    lv.textContent = levelLabel(info.level) + ' · ' + info.score.toFixed(2);
+    var rep = info.repeat || 0;
+    lv.textContent = levelLabel(info.level) + ' · ' + info.score.toFixed(2)
+      + (rep ? (' · 出现过 ' + rep + ' 次' + (info.bonus ? '（+' + info.bonus.toFixed(2) + '）' : '')) : '');
     lv.className = 'pill ref-' + (info.level || 'warn');
     (info.top || []).forEach(function (t) {
-      var card = el('div', 'refcard');
+      var card = el('div', 'refcard' + (t.src === 'user' ? ' user' : ''));
       var img = document.createElement('img');
       img.src = '/api/glyphref/' + t.idx + '.png';
       img.alt = t.label;
       card.appendChild(img);
-      card.appendChild(el('span', 'sc', t.score.toFixed(2)));
-      card.appendChild(el('span', 'lb', t.label));
+      card.appendChild(el('span', 'sc', t.score.toFixed(2) + (t.src === 'user' ? ' 自建' : '')));
+      card.appendChild(el('span', 'lb', t.label || '（未分类）'));
+      var cnt = (t.page_count != null ? t.page_count : (t.count || 0));
+      card.appendChild(el('span', 'cnt', '出现过 ' + cnt + ' 次'));
       grid.appendChild(card);
     });
     if (info.level === 'strong') {
@@ -1358,6 +1365,22 @@
         view.opts.onColumnDelete(S.colSel);
         S.colSel = -1;
         updateColSelUi();
+      });
+    }
+    var hv = document.getElementById('btnHarvest');
+    if (hv) {
+      hv.addEventListener('click', async function () {
+        var pid = S.pageId;
+        if (!pid) { toast('先选一页', 'warn'); return; }
+        try { await flushSave(); } catch (e) { /* ignore */ }
+        try {
+          var r = await API.post('/api/pages/' + encodeURIComponent(pid) + '/harvest', {});
+          var n = (r && r.added) || 0;
+          var total = (r && r.userbank && r.userbank.n) || 0;
+          toast(n ? ('已收录 ' + n + ' 个字形（绿/蓝/红都收；自建字库共 ' + total + ' 个）') : ('这一页的字形已经都收过了（自建字库 ' + total + ' 个）'),
+                n ? 'ok' : 'warn');
+          if (r && r.userbank) { S.refUser = r.userbank; renderRef(); }
+        } catch (e) { toast('收录失败', 'err', e.message); }
       });
     }
     var r = document.getElementById('btnColsReset');

@@ -167,3 +167,24 @@
 - 现交互：拖线=调边界；单击线=选中(selCol，黄色3px)；「− 删分列」删选中线；「+ 加分列」在有选中框时切该框所在列，否则切最宽列；Shift+点击列内=按点加线；「重置分列」重算。
 - 实现：canvas _down 记录 x0/moved，_up 未移动则 selCol=idx 并回调 onColumnSelect；app 侧 S.colSel + updateColSelUi() 更新 #colSelInfo。
 - 验证（打包 exe 内）：单击第 3 条选中(selCol=3)、删除 16->15、加分列 15->16、双击后 zoom/列数不变。
+## 一键学习改为「累积学习」（2026-10-31 晚12）
+- 用户问：提示「会覆盖现有学习结果」是不是只用这一次？→ 改为累积：每次学一页就把该页框登记成样本，参数用所有样本重算。
+- 存储：%LOCALAPPDATA%/yi-segment/calibration/references/<页>.json（{tif, boxes}，最多 8 页）；segment_params.json 只是参数+统计，覆盖它不影响样本。
+- 算法：以当前参数为起点；1/4 图 6 参数粗搜（目标=多页平均 F1）；整页阶段最多验 3 页、试 2 组 tall_split。
+- 实测（TestClient，两页）：learn#1 pages=1 meanF1 0.829；learn#2 pages=2 meanF1 0.890，references 两个文件。
+- API：/api/calibration 增加 pages_count/pages_used/mean_f1；确认框、toast、设置行显示累计页数与平均 F1。
+- 坑：WMI Win32_Process.Create 启动 exe 不继承调用者改过的 $env:YI_SEGMENT_HOME（DCOM 用机器环境）→ 会写进真实 %LOCALAPPDATA%。隔离测试用 TestClient 或 Start-Process。
+## 自建字库（2026-11-01 凌晨）
+- app/userbank.py：%LOCALAPPDATA%/yi-segment/glyphbank/user.npz + user_meta.json；条目=(page,x0..y1,label,ink48)。
+- yi_ref.match()：标准库 top + 自建库 top 合并；**分数/分级仍取标准库**（阈值按标准库标定）；自建候选带 src=user、count；自匹配用 exclude=(x0,y0,x1,y1) 排除，否则自己永远 1.0。
+- check_boxes：自建库相似度 >=0.78 时把 low 提升为 warn（flag=userbank），避免整页手写体全红。
+- 计数：每框 top[0] 的 label 在本页的出现次数 -> label_count / top[].page_count（UI「出现过 N 次」）。
+- 收录：POST /api/pages/{pid}/harvest + 右栏「收录自建字库」；改过的页（框数≠自动）收全部框，否则只收 review==1；run_refcheck 开始时也自动 harvest。
+- 打包：spec hiddenimports 加 app.userbank/app.yi_ref/app.learn/app.buildinfo（懒加载 import 静态分析可能漏）。
+- 实测（exe 内，0003_left 594 框）：harvest 594；refcheck userbank=594；364 框最佳匹配为自建；user glyphref 200。
+## 自建字库成为主得分（2026-11-01 凌晨2）
+- 用户反馈：规范字库（印刷体）与手稿字体不搭，标准库分数不可信 → 得分 = max(标准库分, 自建库相似度 × 重复出现权重)。
+- 自建库聚类：userbank.assign_clusters 在 48x48 特征上贪心聚类（CLUSTER_SIM=0.72，CLUSTER_VERSION=2，meta 存 cluster；旧库 load 时按版本自动重算）。cluster_sizes 即「同形出现过几次」。
+- 权重：f = min(1, log2(1+size)/log2(7))，user_score = sim × (0.75+0.25f)；最终分 = max(std, user_score)；UI 显示「出现过 N 次（+0.xx）」。
+- 实测（0003_left，594 字）：strong107/good338/warn142/low7（原 124/328/131/11），bonus 0~0.215；单页样本多数字形只出现 1 次，权重低——多收几页后共同字形成簇，分数会明显上来。
+- 坑：assign_clusters 变量改名后残留 f16 → NameError（已修）；math 未在 yi_ref 顶层 import（已修）。

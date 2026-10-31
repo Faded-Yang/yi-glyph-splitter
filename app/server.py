@@ -418,6 +418,15 @@ def _calibration_info() -> dict:
     return info
 
 
+def _userbank_stats() -> dict:
+    try:
+        from . import userbank
+        st = userbank.stats()
+        return {"n": st.get("n", 0), "labels": st.get("labels") or {}, "updated": st.get("updated") or ""}
+    except Exception:  # noqa: BLE001
+        return {"n": 0, "labels": {}}
+
+
 def _page_columns(store, pid) -> list:
     """Columns for the UI: auto-split merged bands once, unless the user edited them."""
     try:
@@ -580,6 +589,7 @@ def create_app(project_dir: str = "") -> FastAPI:
             "preview_url": "/api/pages/%s/preview.png?w=%d" % (pid, DEFAULT_PREVIEW_W),
             "has_preview": _preview_ok(store.preview_path(pid)),
             "refcheck": (store.refcheck(pid).get("stats") or {}),
+            "userbank": _userbank_stats(),
             "glyphbank": _glyphbank_available(),
         }
 
@@ -860,6 +870,26 @@ def create_app(project_dir: str = "") -> FastAPI:
             raise HTTPException(status_code=500, detail="读取参考字形失败：%s" % exc)
         return Response(content=data, media_type="image/png",
                         headers={"Cache-Control": "public, max-age=86400"})
+
+    @app.post("/api/pages/{pid}/harvest")
+    def api_harvest(pid: str, request: Request):
+        """把这一页「已确认」的框收进自建字库（切好的单字字形）。"""
+        store: ProjectStore = request.app.state.store
+        if not store.has_page(pid):
+            raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
+        try:
+            added = pipeline.harvest_confirmed(store, pid)
+        except store_mod.StoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail="收录失败：%s" % exc)
+        from . import userbank
+        return {"added": int(added), "userbank": userbank.stats()}
+
+    @app.get("/api/userbank")
+    def api_userbank():
+        from . import userbank
+        return userbank.stats()
 
     @app.post("/api/project/open")
     def api_project_open(request: Request, body: Any = Body(default_factory=dict)):
