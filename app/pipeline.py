@@ -255,6 +255,53 @@ def run_refcheck(store, pid, progress_cb=None, cancel_cb=None) -> dict:
     return result
 
 
+# --------------------------------------------------- per-box reference scoring
+# Cached page grayscale so a single-box re-check costs ~5 ms instead of re-reading
+# a 210 MB scan. Keep at most 2 pages (each ~70 MB).
+_GRAY_CACHE: dict = {}
+
+
+def page_gray(store, pid: str):
+    """Grayscale page, cached per page (keyed by src + mtime)."""
+    src = store.src(pid)
+    if not src or not os.path.isfile(src):
+        raise store_mod.StoreError("源文件不存在：%s" % src)
+    key = (src, os.path.getmtime(src))
+    ent = _GRAY_CACHE.get(pid)
+    if ent and ent[0] == key:
+        return ent[1]
+    gray = C.load_gray(src)
+    _GRAY_CACHE[pid] = (key, gray)
+    while len(_GRAY_CACHE) > 2:
+        _GRAY_CACHE.pop(next(iter(_GRAY_CACHE)))
+    return gray
+
+
+def score_boxes(store, pid: str, boxes) -> list:
+    """Reference match for the given boxes (one page load, N cheap crops)."""
+    from . import yi_ref
+
+    if not yi_ref.available():
+        raise store_mod.StoreError("规范字库缺失（data/glyphbank/bank.npz）")
+    gray = page_gray(store, pid)
+    out = []
+    for b in boxes or []:
+        x0, y0 = int(b.get("x0", 0)), int(b.get("y0", 0))
+        x1, y1 = int(b.get("x1", 0)), int(b.get("y1", 0))
+        h, w = gray.shape[:2]
+        x0, x1 = max(0, min(w, x0)), max(0, min(w, x1))
+        y0, y1 = max(0, min(h, y0)), max(0, min(h, y1))
+        if x1 - x0 < 3 or y1 - y0 < 3:
+            out.append({"id": b.get("id"), "score": 0.0, "level": "low", "top": []})
+            continue
+        m = yi_ref.score_tile(gray[y0:y1, x0:x1])
+        score = float(m.get("score") or 0.0)
+        level = "good" if score >= yi_ref.GOOD else ("warn" if score >= yi_ref.WARN else "low")
+        out.append({"id": b.get("id"), "score": round(score, 4), "level": level,
+                    "top": m.get("top") or []})
+    return out
+
+
 # -------------------------------------------------------------------- cropping
 def render_crop(store, pid, x0, y0, x1, y1, scale: float = 2.0, *, max_side: int = 4000) -> bytes:
     """Crop the original page and return PNG bytes (editor detail view)."""

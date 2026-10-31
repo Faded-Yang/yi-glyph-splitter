@@ -32,7 +32,6 @@
       <button class="btn" id="btnImportFolder" title="选择文件夹批量导入"><svg class="ico"><use href="#i-folder"/></svg><span>导入文件夹</span></button>
       <span class="sep"></span>
       <button class="btn primary" id="btnProcess" title="对勾选页（或全部页）跑分割，只画框不切图"><svg class="ico"><use href="#i-play"/></svg><span>一键处理</span></button>
-      <button class="btn" id="btnRefCheck" title="对照《规范彝文单字图形识别手册》字库逐框打分（离线，不花钱）"><svg class="ico"><use href="#i-book"/></svg><span>规范字校验</span></button>
       <button class="btn primary" id="btnExport" title="按当前框导出 tiles + index.csv + sheet.png"><svg class="ico"><use href="#i-download"/></svg><span>一键切图</span></button>
       <span class="sep"></span>
       <button class="btn" id="btnSettings" title="设置（导出默认值 / 项目目录）"><svg class="ico"><use href="#i-gear"/></svg><span>设置</span></button>
@@ -134,11 +133,10 @@
       <div class="section">
         <h3><span>规范字对照</span><span class="muted" id="refSum"></span></h3>
         <div class="refgrid" id="refGrid"></div>
-        <div class="dim" id="refHint">点顶栏「规范字校验」：逐个框对照规范彝文字库打分（离线、不花钱）</div>
+        <div class="dim" id="refHint">处理完一页会自动对照规范字库打分，低分框用红色虚线常驻；改/新建一个框只重算那一框。</div>
         <div class="ai-headrow" style="margin-top:8px">
           <span class="pill" id="refLevel">未校验</span>
           <button class="btn tiny" id="btnNextLow" title="跳到下一个低分框">下一个低分</button>
-          <button class="btn tiny" id="btnRefOne">校验本页</button>
         </div>
       </div>
 
@@ -147,7 +145,6 @@
         <div id="pageInfo" class="pageinfo"></div>
         <div class="acts two">
           <button class="btn" id="btnProcessOne">处理本页</button>
-          <button class="btn" id="btnRefCheckOne">规范字校验本页</button>
           <button class="btn" id="btnExportOne">切图本页</button>
           <button class="btn" id="btnReload">重新载入</button>
         </div>

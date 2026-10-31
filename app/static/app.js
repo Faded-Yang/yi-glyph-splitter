@@ -25,7 +25,7 @@
     hist: [], redo: [], lastSnap: '',
     dirty: false, saveState: 'idle', saveTimer: null, saving: false,
     jobs: {}, jobOrder: [], jobProgress: {}, pollTimer: null, activeJobId: null,
-    refby: {}, refStats: null,
+    refby: {}, refStats: null, glyphbank: true, refJobPid: null,
     previewW: 1600, previewToken: 1, previewRebuildTried: -1, detailTimer: null, detailRect: null,
     checked: {}, filter: '', armed: false, modalOpen: null,
     tempId: 1, lastExportOut: ''
@@ -225,6 +225,7 @@
       columns: pg.columns || [], source: pg.source || ''
     };
     S.pageStatus = res.status || '';
+    S.glyphbank = res.glyphbank !== false;
     S.boxes = (res.boxes || []).map(normBox);
     S.tempId = S.boxes.reduce(function (m, b) { return Math.max(m, b.id || 0); }, 0) + 1;
     var sum = pageById(pid);
@@ -240,7 +241,12 @@
     setStageHint(S.boxes.length ? '' : '该页还没有框：先「处理本页」，或按 A 在画布上手动框选');
     loadPreview();
     renderPages(); renderPageInfo(); renderInspector(); renderRef(); renderHint();
-    loadRefCheck(pid);
+    loadRefCheck(pid).then(function () {
+      // 打开页面时如果还没有校验结果，自动补一次（之后虚线常驻）
+      if (!S.refStats && S.boxes.length && S.glyphbank && S.pageId === pid) {
+        startRefCheck(pid, { silent: true });
+      }
+    });
   }
 
   function normBox(b) {
@@ -341,7 +347,7 @@
     if (S.pageId !== pid) { return; }
     var rb = (res && res.boxes) || [];
     if (rb.length) {
-      S.boxes = rb.map(normBox);
+      adoptSavedBoxes(rb);
       S.selId = (selIdx >= 0 && selIdx < S.boxes.length) ? S.boxes[selIdx].id : null;
     }
     S.dirty = false;
@@ -488,6 +494,7 @@
       S.boxes.push(nb);
       S.selId = nb.id;
     });
+    rescoreBox(b.id); rescoreBox(nb.id);
     toast('已拆分', 'ok');
   }
   function mergeSel(dir) {
@@ -516,6 +523,7 @@
     mutate(function () { S.boxes.push(nb); S.selId = nb.id; });
     view.setArmed(false);
     setSel(nb.id, { focus: false });   // 新建框后不要把画布甩到这个框上
+    rescoreBox(nb.id);                 // 新建框自动做一次规范字校验
     toast('已新建框', 'ok');
   }
   function toggleArmed() {
@@ -675,6 +683,7 @@
       var x = by[b.id];
       b.refLevel = x ? x.level : '';
       b.refScore = x ? x.score : null;
+      b.refTop = x ? (x.top || []) : [];
     });
     if (S.page) {
       view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
@@ -685,10 +694,12 @@
   function loadRefCheck(pid) {
     S.refby = {}; S.refStats = null;
     renderRef();
-    API.get('/api/pages/' + encodeURIComponent(pid) + '/refcheck').then(function (r) {
-      if (S.pageId !== pid) { return; }
-      if (r && r.available) { applyRefResult(r); } else { renderRef(); }
-    }).catch(function () { if (S.pageId === pid) { renderRef(); } });
+    return API.get('/api/pages/' + encodeURIComponent(pid) + '/refcheck').then(function (r) {
+      if (S.pageId !== pid) { return null; }
+      if (r && r.available) { applyRefResult(r); return r; }
+      renderRef();
+      return null;
+    }).catch(function () { if (S.pageId === pid) { renderRef(); } return null; });
   }
 
   async function refreshRefCheck(pid) {
@@ -747,16 +758,47 @@
                                : '与标准字形部分吻合，建议对照右侧标准字形再确认一下。');
   }
 
-  async function startRefCheck(pid) {
-    if (!pid) { return; }
+  async function startRefCheck(pid, opts) {
+    if (!pid || !S.glyphbank) { return; }
+    if (S.refJobPid === pid) { return; }
+    S.refJobPid = pid;
     var res;
     try { res = await API.post('/api/pages/' + encodeURIComponent(pid) + '/refcheck', {}); }
-    catch (e) { toast('启动规范字校验失败', 'err', e.message); return; }
+    catch (e) { S.refJobPid = null; if (!(opts && opts.silent)) { toast('启动规范字校验失败', 'err', e.message); } return; }
     var rec = await trackJob(res.job_id, { kind: 'refcheck', label: '规范字校验', pageIds: [pid] });
+    S.refJobPid = null;
     if (rec && rec.state === 'done') {
       await refreshRefCheck(pid);
-      if (S.refStats) { toast('规范字校验完成：低分 ' + S.refStats.low + '/' + S.refStats.n, 'ok'); }
+      if (S.refStats) { toast('规范字校验：低分 ' + S.refStats.low + '/' + S.refStats.n + '（虚线常驻）', 'ok'); }
     }
+  }
+
+  // 单个框改完只重算它自己：符合规范字 -> 普通/蓝框；不符合 -> 继续虚线
+  var rescoreTimer = null, rescoreIds = {};
+  function rescoreBox(id) {
+    if (!S.pageId || !S.glyphbank || id == null) { return; }
+    rescoreIds[id] = 1;
+    if (rescoreTimer) { clearTimeout(rescoreTimer); }
+    rescoreTimer = setTimeout(function () {
+      rescoreTimer = null;
+      var ids = Object.keys(rescoreIds).map(Number);
+      rescoreIds = {};
+      var pid = S.pageId;
+      var targets = S.boxes.filter(function (b) { return ids.indexOf(b.id) >= 0; });
+      var payload = targets.map(function (b) { return { id: b.id, x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1 }; });
+      if (!payload.length) { return; }
+      API.post('/api/pages/' + encodeURIComponent(pid) + '/score-box', { boxes: payload }).then(function (r) {
+        if (S.pageId !== pid) { return; }
+        var results = r.boxes || [];
+        for (var k = 0; k < targets.length && k < results.length; k++) {
+          var x = results[k], b = targets[k];
+          b.refLevel = x.level; b.refScore = x.score; b.refTop = x.top || [];
+        }
+        rebuildRefby();
+        if (S.page) { view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: S.selId, columns: S.page.columns }); }
+        renderRef(); renderInspector();
+      }).catch(function () { /* 静默：分数不是关键路径 */ });
+    }, 350);
   }
 
   function nextLowBox() {
@@ -772,6 +814,44 @@
   }
 
   function muted(text) { return el('div', 'muted pad', text); }
+
+  function rebuildRefby() {
+    var by = {};
+    S.boxes.forEach(function (b) {
+      if (b.refLevel) { by[b.id] = { id: b.id, score: b.refScore, level: b.refLevel, top: b.refTop || [] }; }
+    });
+    S.refby = by;
+  }
+
+  function iouBox(a, b) {
+    var ix = Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0));
+    var iy = Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
+    var inter = ix * iy;
+    var uni = (a.x1 - a.x0) * (a.y1 - a.y0) + (b.x1 - b.x0) * (b.y1 - b.y0) - inter;
+    return uni > 0 ? inter / uni : 0;
+  }
+
+  // 保存后服务端会按阅读顺序重编号：按几何把 refLevel/refScore/refTop 搬过去，
+  // 这样虚线不会因为保存一次就消失。
+  function adoptSavedBoxes(list) {
+    var old = S.boxes;
+    var out = (list || []).map(function (raw) {
+      var b = normBox(raw);
+      var best = null, bestI = 0.5;
+      for (var i = 0; i < old.length; i++) {
+        var iou = iouBox(old[i], b);
+        if (iou > bestI) { bestI = iou; best = old[i]; }
+      }
+      if (best) {
+        b.refLevel = best.refLevel || '';
+        b.refScore = best.refScore != null ? best.refScore : null;
+        b.refTop = best.refTop || [];
+      }
+      return b;
+    });
+    S.boxes = out;
+    rebuildRefby();
+  }
 
   function adoptBoxes(list) {
     S.boxes = (list || []).map(normBox);
@@ -903,9 +983,9 @@
   function onJobDone(rec) {
     clearJobProgress(rec);
     if (rec.state === 'done') {
-      if (rec.kind === 'process') { toast('处理完成', 'ok'); refreshAfterJob(rec.pageIds, true); }
+      if (rec.kind === 'process') { toast('处理完成', 'ok'); refreshAfterJob(rec.pageIds, true).then(function () { autoRefCheck(rec.pageIds); }); }
       else if (rec.kind === 'export') { toast('导出完成', 'ok'); }
-      else if (rec.kind === 'refcheck') { toast('规范字校验完成', 'ok'); refreshAfterJob(rec.pageIds, false); }
+      else if (rec.kind === 'refcheck') { refreshAfterJob(rec.pageIds, false); }
     } else if (rec.state === 'canceled') {
       toast('任务已取消', 'warn');
     } else {
@@ -928,8 +1008,8 @@
       reloadCurrentPage();
     }
     if (S.pageId && (!pageIds || pageIds.indexOf(S.pageId) >= 0)) {
-      loadProposals(S.pageId);
-      if (!reloadBoxes) { reloadBoxesQuiet(); }
+      if (!reloadBoxes) { await reloadBoxesQuiet(); }
+      await loadRefCheck(S.pageId);   // 重新应用常驻虚线
     }
   }
 
@@ -943,6 +1023,14 @@
     S.selId = null;
     view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: null, columns: S.page.columns });
     renderInspector(); renderHint(); renderPageInfo(); renderPages();
+  }
+
+  // 处理完一页后自动跑一次规范字校验，结果常驻
+  function autoRefCheck(pageIds) {
+    var pids = (pageIds && pageIds.length) ? pageIds : (S.pageId ? [S.pageId] : []);
+    pids.forEach(function (pid) {
+      if (pid === S.pageId) { startRefCheck(pid, { silent: true }); }
+    });
   }
 
   function cancelJob() {
@@ -1141,10 +1229,6 @@
     startExport(ids, opts);
   }
 
-  function openRefCheck() {
-    if (!S.pageId) { toast('先选择一页', 'warn'); return; }
-    startRefCheck(S.pageId);
-  }
 
   // ------------------------------------------------------------------ 键盘
   function isTypingTarget(t) {
@@ -1204,7 +1288,6 @@
       var text = ids.length ? ('处理勾选的 ' + n + ' 页？') : ('处理全部 ' + n + ' 页？整页分割约 7–13 秒/页。');
       confirmDialog('一键处理', text, function () { startProcess(ids.length ? ids : 'all'); });
     });
-    $('#btnRefCheck').addEventListener('click', openRefCheck);
     $('#btnExport').addEventListener('click', openExport);
     $('#btnSettings').addEventListener('click', openDrawer);
     $('#jobCancel').addEventListener('click', cancelJob);
@@ -1237,8 +1320,6 @@
       if (!S.pageId) { return; }
       confirmDialog('处理本页', '对当前页跑分割？', function () { startProcess([S.pageId]); });
     });
-    $('#btnRefOne').addEventListener('click', openRefCheck);
-    $('#btnRefCheckOne').addEventListener('click', openRefCheck);
     $('#btnExportOne').addEventListener('click', openExport);
     $('#btnReload').addEventListener('click', reloadCurrentPage);
     $('#btnFit').addEventListener('click', function () { view.resetView(); });
@@ -1292,6 +1373,8 @@
         if (S.previewW < 3200 && S.page && S.page.w) { /* noop */ }
       },
       onEditEnd: function () {
+        var eb = selBox();
+        if (eb) { rescoreBox(eb.id); }   // 改完框自动重算这一框
         if (snapshot() === S.lastSnap) {
           if (S.hist.length) { S.hist.pop(); }
           if (!S.dirty) { setSaveState('saved'); }

@@ -700,6 +700,26 @@ def create_app(project_dir: str = "") -> FastAPI:
             message="排队中：规范字校验", meta={"pid": pid})
         return {"job_id": job_id, "pid": pid}
 
+    @app.post("/api/pages/{pid}/score-box")
+    def api_score_box(pid: str, request: Request, body: Any = Body(default_factory=dict)):
+        """Re-score ONE box (called automatically after the user edits that box)."""
+        store: ProjectStore = request.app.state.store
+        if not store.has_page(pid):
+            raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
+        if not _glyphbank_available():
+            raise HTTPException(status_code=400, detail="规范字库未安装")
+        data = body if isinstance(body, dict) else {}
+        boxes = data.get("boxes")
+        if not isinstance(boxes, list) or not boxes:
+            raise HTTPException(status_code=400, detail="缺少 boxes")
+        try:
+            scored = pipeline.score_boxes(store, pid, boxes[:64])
+        except store_mod.StoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail="规范字校验失败：%s" % exc)
+        return {"boxes": scored}
+
     @app.get("/api/glyphref/{idx}.png")
     def api_glyphref(idx: int):
         try:
