@@ -28,12 +28,13 @@ from . import config as config_mod
 from . import jobs as jobs_mod
 from . import paths
 from . import pipeline
+from . import buildinfo
 from . import store as store_mod
 from .store import ProjectStore, StoreError
 
 log = logging.getLogger("app.server")
 
-VERSION = "1.0"
+VERSION = buildinfo.VERSION
 APP_TITLE = "彝文切字工具"
 DEFAULT_PREVIEW_W = pipeline.PREVIEW_W
 
@@ -419,6 +420,7 @@ def create_app(project_dir: str = "") -> FastAPI:
     def api_health(request: Request):
         store = request.app.state.store
         return {"ok": True, "app": APP_TITLE, "version": VERSION,
+                "build": buildinfo.build_stamp(),
                 "project": str(store.root), "tools": pipeline.ensure_tools(),
                 "glyphbank": _glyphbank_available(),
                 "time": time.strftime("%Y-%m-%d %H:%M:%S")}

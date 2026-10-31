@@ -30,6 +30,7 @@ for _p in (_ROOT, _HERE):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from app import buildinfo  # noqa: E402
 from app import paths  # noqa: E402
 
 APP_TITLE = "彝文切字工具"
@@ -110,7 +111,7 @@ def _show_native_window(url: str, log: logging.Logger) -> bool:
         log.warning("pywebview 不可用（%s），尝试 Edge 应用窗口", exc)
         return False
     try:
-        webview.create_window(APP_TITLE, url, width=1520, height=960,
+        webview.create_window(APP_TITLE + " v" + buildinfo.VERSION, url, width=1520, height=960,
                               min_size=(1024, 680), text_select=True)
         log.info("native window created")
         webview.start()

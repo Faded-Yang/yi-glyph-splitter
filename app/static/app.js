@@ -174,6 +174,8 @@
   }
 
   function applyState(st) {
+    if (st && st.version) { S.version = st.version; }
+    if (st && st.build) { S.build = st.build; }
     if (!st) { return; }
     S.settings = st.settings || S.settings;
     S.pages = Array.isArray(st.pages) ? st.pages : [];
@@ -909,6 +911,7 @@
       ['尺寸', S.page.w + ' × ' + S.page.h + ' px'],
       ['框数', String(S.boxes.length)],
       ['已复核', S.boxes.filter(function (b) { return !!b.review; }).length + ' / ' + S.boxes.length],
+      ['分列', (S.page.columns && S.page.columns.length) ? (S.page.columns.length + ' 列' + (S.showCols ? '（已显示分列线）' : '（分列线已隐藏）')) : '无（先处理本页）'],
       ['规范字', S.refStats ? ('中位 ' + S.refStats.median.toFixed(2) + ' · 低分 ' + S.refStats.low + '/' + S.refStats.n) : '未校验']
     ];
     rows.forEach(function (r) {
@@ -1192,6 +1195,13 @@
     $('#setOrder').value = def.order || 'visual';
     $('#setFmt').value = def.fmt || 'png';
     $('#setProjectPath').value = (S.project && S.project.path) || '';
+    var ab = document.getElementById('aboutBuild');
+    if (ab) {
+      var bd = S.build || '';
+      ab.textContent = '版本 ' + (S.version || '?') + (bd ? ('  ·  构建 ' + bd) : '');
+    }
+    var chk = document.getElementById('chkCols');
+    if (chk) { chk.checked = !!S.showCols; }
   }
   async function saveSettings() {
     var defaults = {
@@ -1300,6 +1310,17 @@
   }
 
   // ------------------------------------------------------------------ 绑定
+  function setColsVisible(on, silent) {
+    S.showCols = !!on;
+    if (view && view.setShowColumns) { view.setShowColumns(S.showCols); }
+    var b = document.getElementById('btnCols');
+    if (b) { b.classList.toggle('active', S.showCols); }
+    var chk = document.getElementById('chkCols');
+    if (chk) { chk.checked = S.showCols; }
+    try { localStorage.setItem('yi.ui.showCols', S.showCols ? '1' : '0'); } catch (e) { /* ignore */ }
+    if (!silent) { toast(S.showCols ? '分列线已显示：拖动蓝色竖线可调整' : '分列线已隐藏', 'ok'); }
+  }
+
   function initColumnsUi() {
     try {
       var v = localStorage.getItem('yi.ui.showCols');
@@ -1308,12 +1329,12 @@
     if (view && view.setShowColumns) { view.setShowColumns(S.showCols); }
     var b = document.getElementById('btnCols');
     if (b) {
-      b.classList.toggle('active', S.showCols);
-      b.addEventListener('click', function () {
-        S.showCols = !S.showCols;
-        if (view && view.setShowColumns) { view.setShowColumns(S.showCols); }
-        b.classList.toggle('active', S.showCols);
-        try { localStorage.setItem('yi.ui.showCols', S.showCols ? '1' : '0'); } catch (e) { /* ignore */ }
+      b.addEventListener('click', function () { setColsVisible(!S.showCols); });
+    }
+    var chk = document.getElementById('chkCols');
+    if (chk) {
+      chk.addEventListener('change', function () {
+        setColsVisible(chk.checked);
       });
     }
     var r = document.getElementById('btnColsReset');

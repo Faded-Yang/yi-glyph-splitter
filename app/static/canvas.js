@@ -589,12 +589,12 @@
     var ctx = this.ctx;
     var bs = this._colBounds();
     ctx.save();
-    ctx.setLineDash([5, 5]);
-    ctx.lineWidth = 1;
+    ctx.setLineDash([7, 5]);
+    ctx.lineWidth = 1.6;
     for (var i = 0; i < bs.length; i++) {
       var x = Math.round(bs[i] * this.scale + this.tx) + 0.5;
       if (x < -2 || x > this.cw + 2) { continue; }
-      ctx.strokeStyle = (i === this.hoverCol) ? 'rgba(250,204,21,0.95)' : 'rgba(96,165,250,0.55)';
+      ctx.strokeStyle = (i === this.hoverCol) ? 'rgba(250,204,21,1)' : 'rgba(56,189,248,0.9)';
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, this.ch);
@@ -605,10 +605,11 @@
     for (var k = 0; k < bs.length; k++) {
       var hx = Math.round(bs[k] * this.scale + this.tx);
       if (hx < -6 || hx > this.cw + 6) { continue; }
-      ctx.fillStyle = (k === this.hoverCol) ? 'rgba(250,204,21,0.95)' : 'rgba(96,165,250,0.75)';
-      ctx.fillRect(hx - 4, 0, 8, 12);
-      ctx.fillStyle = '#0b1220';
-      ctx.fillRect(hx - 1, 3, 2, 6);
+      ctx.fillStyle = (k === this.hoverCol) ? 'rgba(250,204,21,0.98)' : 'rgba(56,189,248,0.92)';
+      ctx.fillRect(hx - 6, 0, 12, 15);
+      ctx.fillStyle = '#04121f';
+      ctx.font = '600 9px Consolas, ui-monospace, monospace';
+      ctx.fillText(k === 0 ? '|' : String(k), hx - 2.5, 11);
     }
     ctx.restore();
   };
