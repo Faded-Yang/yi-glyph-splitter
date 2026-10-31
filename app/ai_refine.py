@@ -90,6 +90,10 @@ class AIConfig:
     timeout: float = 60.0
     mock: bool = False
     detail: str = "original"          # 视觉接口 detail：original / low
+    # DeepSeek 默认开启"思考模式"：思维链计入 max_tokens，额度小的时候 content 会是空串。
+    # 本任务只想要一个 JSON，关掉思考既省 token 又快（实测 30 vs 500+ tokens）。
+    thinking: str = "disabled"        # "disabled" | "enabled"
+    max_tokens: int = 512             # 关闭思考 512 足够；开启思考建议 >= 2000
     retries: int = 2                  # 429/5xx 的重试次数（最多 3 次请求）
     retry_backoff: float = 0.5        # 首次退避秒数，之后翻倍（封顶 8s）
     mock_delay: float = 0.0           # mock 每框耗时（测并发/取消用）
@@ -536,11 +540,18 @@ def _make_client(cfg: AIConfig):
     )
 
 
-def _message_text(resp: Any) -> str:
-    try:
-        content = resp.choices[0].message.content
-    except (AttributeError, IndexError, TypeError) as exc:
-        raise RuntimeError("模型响应结构异常：%s" % _short(exc, 60)) from exc
+class _EmptyContent(ValueError):
+    """模型没给正文（最常见：思考模式把 max_tokens 用完了）。"""
+
+    def __init__(self, message: str, finish_reason: str = "", usage: Any = None,
+                 raw: str = ""):
+        super().__init__(message)
+        self.finish_reason = finish_reason
+        self.usage = usage
+        self.raw = raw
+
+
+def _flatten_content(content: Any) -> str:
     if isinstance(content, list):
         parts = []
         for p in content:
@@ -548,27 +559,82 @@ def _message_text(resp: Any) -> str:
                 parts.append(p.get("text") or "")
             elif isinstance(p, str):
                 parts.append(p)
-        content = "".join(parts)
-    if not isinstance(content, str) or not content.strip():
-        raise ValueError("模型返回空内容")
-    return content
+        return "".join(parts)
+    return content if isinstance(content, str) else ""
+
+
+def _message_text(resp: Any) -> str:
+    try:
+        choice = resp.choices[0]
+        msg = choice.message
+        content = msg.content
+        reasoning = getattr(msg, "reasoning_content", None)
+        finish = getattr(choice, "finish_reason", "") or ""
+        usage = getattr(resp, "usage", None)
+    except (AttributeError, IndexError, TypeError) as exc:
+        raise RuntimeError("模型响应结构异常：%s" % _short(exc, 60)) from exc
+
+    text = _flatten_content(content).strip()
+    if text:
+        return text
+
+    # 思考模式下正文为空：思维链里往往已经写出了 JSON，先救回来
+    cot = _flatten_content(reasoning).strip()
+    if cot:
+        LOG.info("正文为空，改用 reasoning_content（%d 字, finish=%s）", len(cot), finish)
+        return cot
+
+    reason = "finish=%s" % (finish or "?")
+    try:
+        if usage is not None:
+            reason += ", tokens=%s/%s" % (getattr(usage, "completion_tokens", "?"),
+                                          getattr(usage, "total_tokens", "?"))
+    except Exception:
+        pass
+    raise _EmptyContent("模型返回空内容（%s）" % reason, finish_reason=finish,
+                        usage=usage, raw=_short(repr(resp), 200))
+
+
+def _extra_body(cfg: AIConfig) -> dict:
+    """DeepSeek 的思考模式开关走 extra_body（OpenAI SDK 的扩展字段）。"""
+    thinking = str(getattr(cfg, "thinking", "disabled") or "disabled").lower()
+    if thinking in ("enabled", "on", "true", "1"):
+        return {"thinking": {"type": "enabled"}}
+    return {"thinking": {"type": "disabled"}}
 
 
 def _chat_once(client: Any, cfg: AIConfig, prompt: str, data_url: str) -> str:
-    resp = client.chat.completions.create(
-        model=cfg.model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": data_url, "detail": cfg.detail}},
-            ]},
-        ],
-        temperature=0.0,
-        max_tokens=200,
-        stream=False,
-    )
-    return _message_text(resp)
+    """One vision request; retries once with a bigger budget if the answer was cut."""
+    max_tokens = max(64, int(getattr(cfg, "max_tokens", 512) or 512))
+    last_err: Optional[BaseException] = None
+    for attempt in range(2):
+        resp = client.chat.completions.create(
+            model=cfg.model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url, "detail": cfg.detail}},
+                ]},
+            ],
+            temperature=0.0,
+            max_tokens=max_tokens,
+            extra_body=_extra_body(cfg),
+            stream=False,
+        )
+        try:
+            return _message_text(resp)
+        except _EmptyContent as exc:
+            last_err = exc
+            finish = str(getattr(exc, "finish_reason", "") or "")
+            LOG.warning("模型返回空内容（第 %d 次, finish=%s, max_tokens=%d）", attempt + 1, finish, max_tokens)
+            if attempt == 0 and (finish == "length" or max_tokens < 2048):
+                max_tokens = min(4096, max_tokens * 4)
+                continue
+            raise
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("模型未返回任何内容")
 
 
 _RETRY_STATUS = (408, 425, 429, 500, 502, 503, 504)
@@ -918,8 +984,22 @@ def _friendly_error(exc: BaseException, cfg: AIConfig) -> str:
     return _short(exc, 100)
 
 
+def _tiny_test_image() -> str:
+    """A 200x140 JPEG with a red rectangle - verifies that the model really sees images."""
+    im = Image.new("RGB", (200, 140), (238, 236, 230))
+    d = ImageDraw.Draw(im)
+    d.rectangle([50, 30, 150, 110], outline=(200, 0, 0), width=3)
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=88)
+    return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 def test_connection(cfg: Optional[AIConfig] = None) -> dict:
-    """最小文本请求验证 key / base_url / model。返回 {ok: bool, message: str}（不含 key 明文）。"""
+    """一次带图的真实请求验证 key / base_url / model（不含 key 明文）。
+
+    特意发一张图，因为"文本能通"不代表"视觉能用"；也顺便暴露
+    "思考模式把 max_tokens 吃光导致正文为空"这类问题。
+    """
     cfg = cfg if cfg is not None else AIConfig()
     if cfg.mock:
         return {"ok": True, "message": "[mock] 未发网络请求：%s / %s" % (cfg.base_url, cfg.model)}
@@ -927,16 +1007,32 @@ def test_connection(cfg: Optional[AIConfig] = None) -> dict:
         return {"ok": False, "message": "未配置 API Key（可在设置里填，或设环境变量 DEEPSEEK_API_KEY）"}
     try:
         client = _make_client(cfg)
+        t0 = time.time()
         resp = client.chat.completions.create(
             model=cfg.model,
-            messages=[{"role": "user", "content": "ping（连通性测试，请只回 ok）"}],
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": "这张图里有一个红色矩形框。请只回 JSON：{\"ok\":true}"},
+                {"type": "image_url", "image_url": {"url": _tiny_test_image(), "detail": "low"}},
+            ]}],
             temperature=0.0,
-            max_tokens=8,
+            max_tokens=64,
+            extra_body=_extra_body(cfg),
             stream=False,
         )
-        text = _message_text(resp)
-        return {"ok": True, "message": "连接成功：%s · %s · 回复「%s」"
-                % (cfg.base_url, cfg.model, _short(text, 30))}
+        dt = time.time() - t0
+        try:
+            text = _message_text(resp)
+        except _EmptyContent as exc:
+            return {"ok": False, "message":
+                    "视觉请求通了但正文为空（%s，%.1fs）。常见原因：思考模式吃光 max_tokens"
+                    "（本程序默认已关闭思考）、或该模型不接受图片输入。" % (exc, dt)}
+        finish = ""
+        try:
+            finish = resp.choices[0].finish_reason or ""
+        except Exception:
+            pass
+        return {"ok": True, "message": "视觉接口可用：%s · %s · %.1fs · finish=%s · 回复「%s」"
+                % (cfg.base_url, cfg.model, dt, finish or "?", _short(text, 40))}
     except Exception as exc:
         LOG.warning("test_connection 失败：%s", _short(exc, 200))
         return {"ok": False, "message": _friendly_error(exc, cfg)}

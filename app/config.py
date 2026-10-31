@@ -15,6 +15,10 @@ DEFAULT_AI = {
     "max_workers": 4,
     "timeout": 60.0,
     "enabled": True,
+    # DeepSeek 默认开启思考模式：思维链会吃光 max_tokens，正文就成空串。
+    # 这里只想要一个 JSON，默认关闭思考（省 token 且快 20 倍）。
+    "thinking": "disabled",
+    "max_tokens": 512,
 }
 DEFAULT_EXPORT = {
     "pad_ratio": 0.10,
@@ -73,5 +77,6 @@ class AppConfig:
     def ai_config(self):
         """Import lazily so app.config has no heavy deps."""
         from .ai_refine import AIConfig
-        return AIConfig(**{k: self.ai[k] for k in ("api_key", "base_url", "model",
-                                                 "max_workers", "timeout") if k in self.ai})
+        keys = ("api_key", "base_url", "model", "max_workers", "timeout",
+                "thinking", "max_tokens")
+        return AIConfig(**{k: self.ai[k] for k in keys if k in self.ai})

@@ -80,6 +80,8 @@ CLI 还会额外写 `page.json`（全部坐标）与 `overlay.png`（整页叠�
 ## AI 复核（DeepSeek 视觉）
 
 - 接口：OpenAI 兼容 `https://api.deepseek.com`，模型 `deepseek-flash`（官方 Vision 指南）
+- **默认关闭"思考模式"**（`thinking: disabled`）：DeepSeek 默认开思考时，思维链会吃光 `max_tokens`，
+  正文变成空串（这正是之前"每条建议都是『模型返回空内容』"的原因）；关掉后一次请求约 30 tokens、0.6–0.9 s/框
 - 每框：裁上下文（上下 0.9h、左右 0.5w）→ 在当前框上画 3px 红框 → 目标字高 ≥240 px → JPEG base64
 - 提示模型**只回 JSON**（action: tighten/split/merge/keep + 归一化坐标 + 置信度），服务端换算并做
   IoU / 尺寸比 / 重叠 校验，不合格退回 keep
@@ -125,6 +127,11 @@ pywebview(+pythonnet, 原生窗口)。不需要 GPU、不需要 torch、不需�
 **画布一片空白、右栏显示「尺寸 0 × 0」**：多半是这一页的预览图缺失或写坏了（处理到一半被取消/进程被杀）。
 现在会自动修复：服务端在打开页面或请求预览时发现缺失/损坏就当场重建，前端失败一次还会带 `?rebuild=1` 重试；
 也可以手动点右栏「重新载入」。若仍空白，看日志 `%LOCALAPPDATA%\yi-segment\logs\app.log`。
+
+**AI 建议全是「模型返回空内容」**：DeepSeek 默认开启思考模式，思维链计入 `max_tokens`；旧版本把
+`max_tokens` 设成 200 → 预算全被思维链吃掉，正文为空。新版已默认 `thinking: disabled` + `max_tokens: 512`，
+并在正文为空时自动改用 `reasoning_content` / 加倍预算重试。可点设置里「测试连接」——它会真的发一张带红框的图和
+模型要 JSON，返回「视觉接口可用 … finish=stop」才算通。若仍失败，消息里会带 `finish_reason` 与 token 数便于诊断。
 
 **双击没反应 / 端口被占用**：程序会自动顺延端口（8765→8766…）并打印在日志里；也可以在快捷方式后加
 `--port 9000`。**SmartScreen 拦截**：exe 未签名，选「更多信息 → 仍要运行」。

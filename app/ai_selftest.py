@@ -588,10 +588,14 @@ def test_conn(c: Checker) -> None:
     with FakeServer() as fs:
         fs.state.script = [{"content": "ok"}]
         r = test_connection(_cfg(fs))
-        c.check("连通性成功 -> ok True", r["ok"] is True and "连接成功" in r["message"], r)
+        c.check("连通性成功 -> ok True", r["ok"] is True and "视觉接口可用" in r["message"], r)
         body = fs.state.requests[0]["body"] if fs.state.requests else {}
-        c.check("test_connection 只发文本（不带图）",
-                isinstance((body.get("messages") or [{}])[0].get("content"), str), body.get("messages"))
+        # 现在必须发"文字 + 图片"的混合 content，才能真正验证视觉能力
+        parts = ((body.get("messages") or [{}])[0].get("content") or [])
+        kinds = [p.get("type") for p in parts if isinstance(p, dict)]
+        c.check("test_connection 发的是带图请求", "image_url" in kinds, kinds)
+        c.check("test_connection 关闭思考模式（否则正文可能为空）",
+                (body.get("thinking") or {}).get("type") == "disabled", body.get("thinking"))
     with FakeServer() as fs:
         fs.state.script = [{"status": 401, "message": "invalid key"}]
         r = test_connection(_cfg(fs))
