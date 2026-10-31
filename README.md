@@ -180,6 +180,29 @@ CLI 还会额外写 `page.json`（全部坐标）与 `overlay.png`（整页叠�
     docs/                SPEC / CLI / 桌面说明 / 后端契约 / 先例调研
     samples/             示例 tile / 拼版 / 界面截图
 
+## 一键处理精度（2026-11 改进，实测口径）
+
+用 `out/` 里 6 页手工切分结果做基准（`scripts/bench_segmentation.py --from-out`，IoU≥0.5 匹配，6 页平均 F1）：
+
+| 版本 | mean F1（1/4 图，控制变量） |
+|---|---|
+| 改进前 | 0.8465 |
+| + 两字粘连的行/列谷底补切、污渍过滤、收边界、碎片丢弃 | 0.8789 |
+| + 参数调优（wide_split_ratio 1.70 / tall_split_depth 0.80） | **0.8821** |
+
+全分辨率终版：mean F1 0.8768（extra 526 / missed 336）。
+
+已修正的三类问题：
+- **两字粘连**：高框/宽框在墨量谷底切开（不要求空隙），切完两端各自收紧到真实墨迹；
+- **污渍**：凸包填充率高（>0.85）且 ink_frac 大的实心块判为污渍丢掉；
+- **框画大/带上旁边墨点**：每个框只保留主笔画 + 附近足够大的部件，旁边孤立墨点不再撑大边界（错位框 226→98）。
+
+复现：
+```
+python scripts/bench_segmentation.py --from-out            # 全分辨率
+python scripts/bench_segmentation.py --from-out --scale 0.25   # 快速迭代
+python scripts/tune_segmentation.py --scale 0.25 --passes 2    # 参数搜索
+```
 ## 自建字库（用你切好的单字当模板）
 
 印刷体的《规范彝文》和这本手稿的写法差很多，所以程序还支持**自建字库**：

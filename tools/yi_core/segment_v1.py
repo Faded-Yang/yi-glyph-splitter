@@ -78,6 +78,14 @@ class Params:
     tall_split_ratio: float = 1.30  # split when h > this * median glyph height
     tall_split_depth: float = 0.65  # valley row ink must be < this * median row ink
     tall_split_min_part: float = 0.35  # each half must be >= this * median height
+    wide_split: bool = True          # also split boxes that hold two glyphs side by side
+    wide_split_ratio: float = 1.50   # split when w > this * median glyph width
+    wide_split_depth: float = 0.65   # col valley ink must be < this * median col ink
+    # --- stain blobs (smooth filled patches look nothing like strokes) -------
+    stain_filter: bool = True
+    tighten_boxes: bool = True       # shrink box onto the glyph (drop stray specks)
+    blob_solid: float = 0.85         # area / convex-hull area above this = blob-like
+    blob_fill: float = 0.35          # ink fraction above this = filled patch
     # --- misc ---------------------------------------------------------------
     verbose: bool = False
 
@@ -384,6 +392,60 @@ def _segment_column(prof, comps, cbox, areas, cflat, H, p: Params, height: int):
     return merged, H
 
 
+def _tighten_box(mask: np.ndarray, box, H: float, p: "Params"):
+    """Shrink a box onto the glyph: drop stray specks that inflate the boundary.
+
+    Strokes of ONE glyph sit within ~0.15*H of each other; a separate dust dot /
+    neighbour's stroke tip / stain speck sits farther away or is much smaller.
+    Keeping only the main body + nearby sizeable parts, then re-bboxing, stops
+    "boxes grow until they swallow other ink".
+    """
+    x0, y0, x1, y1 = [int(v) for v in box]
+    if x1 - x0 < 4 or y1 - y0 < 4 or H <= 0:
+        return box
+    sub = (mask[y0:y1, x0:x1] > 0).astype(np.uint8)
+    if sub.size == 0:
+        return box
+    n, lab, stats, cent = cv2.connectedComponentsWithStats(sub, connectivity=8)
+    if n <= 1:
+        return box
+    areas = stats[1:, cv2.CC_STAT_AREA].astype(np.float64)
+    main = int(np.argmax(areas)) + 1
+    m_area = float(areas[main - 1])
+    mx0 = stats[main, cv2.CC_STAT_LEFT]
+    my0 = stats[main, cv2.CC_STAT_TOP]
+    mx1 = mx0 + stats[main, cv2.CC_STAT_WIDTH]
+    my1 = my0 + stats[main, cv2.CC_STAT_HEIGHT]
+    near = max(4.0, 0.18 * H)
+    keep = [main]
+    for i in range(1, n):
+        if i == main:
+            continue
+        if float(areas[i - 1]) < max(0.10 * m_area, 0.02 * H * H):
+            continue
+        gx0 = stats[i, cv2.CC_STAT_LEFT]
+        gy0 = stats[i, cv2.CC_STAT_TOP]
+        gx1 = gx0 + stats[i, cv2.CC_STAT_WIDTH]
+        gy1 = gy0 + stats[i, cv2.CC_STAT_HEIGHT]
+        gap = max(mx0 - gx1, gx0 - mx1, my0 - gy1, gy0 - my1, 0)
+        if gap <= near:
+            keep.append(i)
+    sel = np.isin(lab, keep)
+    ys, xs = np.nonzero(sel)
+    if xs.size == 0:
+        return box
+    nx0, nx1 = int(xs.min()), int(xs.max()) + 1
+    ny0, ny1 = int(ys.min()), int(ys.max()) + 1
+    # never grow the box, and keep at least a reasonable body
+    nx0 = max(nx0, 0)
+    ny0 = max(ny0, 0)
+    nx1 = min(nx1, x1 - x0)
+    ny1 = min(ny1, y1 - y0)
+    if (nx1 - nx0) < 0.45 * (x1 - x0) or (ny1 - ny0) < 0.45 * (y1 - y0):
+        return box
+    return (x0 + nx0, y0 + ny0, x0 + nx1, y0 + ny1)
+
+
 def _post_split(box, mask: np.ndarray, H: float, p: Params):
     """Split a box that still contains two glyphs (the DP only cuts along rows).
 
@@ -434,53 +496,96 @@ def _post_split(box, mask: np.ndarray, H: float, p: Params):
 
 
 # ------------------------------------------------------------------ main
-def _split_tall_boxes(glyphs, mask, med_h: float, p: "Params"):
-    """Learnable post-pass: boxes taller than usual are usually two glyphs.
+def _tight_box(sub, ox, oy):
+    """Tight ink bbox of a mask patch, in page coordinates (None when empty)."""
+    ys, xs = np.nonzero(sub)
+    if ys.size == 0:
+        return None
+    return (ox + int(xs.min()), oy + int(ys.min()), ox + int(xs.max()) + 1, oy + int(ys.max()) + 1)
 
-    Splits at the deepest ink valley of the box's row profile (works even when
-    the two glyphs touch, unlike _post_split which needs a blank band).
+
+def _split_once(g, mask, med_h, med_w, p):
+    """Split a glyph box into two tight boxes when it clearly holds two glyphs.
+
+    Row split: h > tall_split_ratio * med_h, cut at the deepest row-ink valley.
+    Col split: w > wide_split_ratio * med_w, cut at the deepest column valley.
+    The cut only needs a valley (not an empty band), so touching glyphs split too.
+    """
+    x0, y0, x1, y1 = int(g.x0), int(g.y0), int(g.x1), int(g.y1)
+    sub = mask[y0:y1, x0:x1]
+    if sub.size == 0:
+        return None
+    h, w = sub.shape
+    if med_h > 0 and h > p.tall_split_ratio * med_h and h >= 20:
+        prof = sub.sum(axis=1).astype(np.float32)
+        k = max(3, h // 16)
+        ker = np.ones(k, np.float32) / float(k)
+        lo, hi = int(h * 0.28), int(h * 0.72)
+        seg = np.convolve(prof, ker, mode="same")[lo:hi]
+        if seg.size >= 6:
+            idx = int(np.argmin(seg))
+            med = float(np.median(seg))
+            cut = lo + idx
+            depth_ok = (med <= 0 or float(seg[idx]) <= p.tall_split_depth * med)
+            if min(cut, h - cut) >= p.tall_split_min_part * med_h and depth_ok:
+                top = _tight_box(sub[:cut], x0, y0)
+                bot = _tight_box(sub[cut:], x0, y0 + cut)
+                if top and bot:
+                    return top, bot, "split_tall"
+    if p.wide_split and med_w > 0 and w > p.wide_split_ratio * med_w and w >= 20:
+        prof = sub.sum(axis=0).astype(np.float32)
+        k = max(3, w // 16)
+        ker = np.ones(k, np.float32) / float(k)
+        lo, hi = int(w * 0.30), int(w * 0.70)
+        seg = np.convolve(prof, ker, mode="same")[lo:hi]
+        if seg.size >= 6:
+            idx = int(np.argmin(seg))
+            med = float(np.median(seg))
+            cut = lo + idx
+            depth_ok = (med <= 0 or float(seg[idx]) <= p.wide_split_depth * med)
+            if min(cut, w - cut) >= p.tall_split_min_part * med_w and depth_ok:
+                left = _tight_box(sub[:, :cut], x0, y0)
+                right = _tight_box(sub[:, cut:], x0 + cut, y0)
+                if left and right:
+                    return left, right, "split_wide"
+    return None
+
+
+def _split_tall_boxes(glyphs, mask, med_h: float, p: "Params", med_w: float = 0.0):
+    """Learnable post-pass: split boxes that still hold two glyphs.
+
+    Works on rows (two glyphs stacked) and columns (two glyphs side by side),
+    up to two levels deep, and rebuilds tight boxes for both parts.
     """
     if not p.tall_split or med_h <= 0 or not glyphs:
         return glyphs
     out = []
     for g in glyphs:
-        if g.h <= p.tall_split_ratio * med_h:
-            out.append(g)
-            continue
-        sub_ = mask[g.y0:g.y1, g.x0:g.x1]
-        if sub_.size == 0 or sub_.shape[0] < 20:
-            out.append(g)
-            continue
-        prof = sub_.sum(axis=1).astype(np.float32)
-        h = int(prof.size)
-        lo, hi = int(h * 0.28), int(h * 0.72)
-        seg = prof[lo:hi]
-        if seg.size < 6:
-            out.append(g)
-            continue
-        k = max(3, h // 16)
-        ker = np.ones(k, np.float32) / float(k)
-        seg2 = np.convolve(seg, ker, mode="same")
-        idx = int(np.argmin(seg2))
-        med = float(np.median(seg2))
-        cut = g.y0 + lo + idx
-        top, bottom = cut - g.y0, g.y1 - cut
-        if min(top, bottom) < p.tall_split_min_part * med_h:
-            out.append(g)
-            continue
-        if med > 0 and float(seg2[idx]) > p.tall_split_depth * med:
-            out.append(g)
-            continue
-        a = copy.copy(g)
-        b = copy.copy(g)
-        a.y1 = cut - 1
-        b.y0 = cut
-        a.flags = list(g.flags) + ["split_tall"]
-        b.flags = list(g.flags) + ["split_tall"]
-        a.area = int(a.w * a.h)
-        b.area = int(b.w * b.h)
-        out.append(a)
-        out.append(b)
+        stack = [(g, 0)]
+        guard = 0
+        while stack and guard < 60:
+            guard += 1
+            cur, depth = stack.pop()
+            nxt = None
+            if depth < 3:
+                nxt = _split_once(cur, mask, med_h, med_w, p)
+            if nxt is None:
+                out.append(cur)
+                continue
+            (a, b, tag) = nxt
+            ga = copy.copy(cur)
+            gb = copy.copy(cur)
+            ga.x0, ga.y0, ga.x1, ga.y1 = a
+            gb.x0, gb.y0, gb.x1, gb.y1 = b
+            ga.flags = list(cur.flags) + [tag]
+            gb.flags = list(cur.flags) + [tag]
+            for gg in (ga, gb):
+                gg.area = int(gg.w * gg.h)
+                sub2 = mask[gg.y0:gg.y1, gg.x0:gg.x1]
+                gg.ink = int(sub2.sum())
+            stack.append((ga, depth + 1))
+            stack.append((gb, depth + 1))
+    out.sort(key=lambda x: (x.col, x.y0, x.x0))
     return out
 
 
@@ -661,6 +766,16 @@ def segment_page(gray: np.ndarray, *, base_scale: float = 1.0, params: Params | 
         if (g.flat > p.flat_veto or g.ink_frac > p.ink_frac_max
                 or g.core_frac < p.core_frac_min):
             continue
+        if p.stain_filter and g.ink_frac > p.blob_fill:
+            # 污渍是「实心光滑块」：凸包填充率高；字形是细笔画，填充率低
+            _sm = (mask2[g.y0:g.y1, g.x0:g.x1] > 0).astype(np.uint8)
+            if _sm.size:
+                _cnts, _ = cv2.findContours(_sm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+                if _cnts:
+                    _area = float(_sm.sum())
+                    _hull = sum(cv2.contourArea(cv2.convexHull(c)) for c in _cnts if len(c) > 2)
+                    if _hull > 0 and _area / _hull > p.blob_solid:
+                        continue
         if med_w and g.w > 2.3 * med_w or (med_h and g.h > 2.3 * med_h):
             continue
         if med_w and med_h and g.w < 0.25 * med_w and g.h < 0.32 * med_h:
@@ -670,7 +785,33 @@ def segment_page(gray: np.ndarray, *, base_scale: float = 1.0, params: Params | 
         g.area = int(g.w * g.h)
         out.append(g)
     glyphs = out
-    glyphs = _split_tall_boxes(glyphs, mask2 > 0, med_h, p)  # 学习到的补切（两字粘连）
+    glyphs = _split_tall_boxes(glyphs, mask2 > 0, med_h, p, med_w)  # 补切两字粘连（行/列都能切）
+    # 补切可能切出「半截笔画」：把明显小于字形的小块丢掉（不是字，是碎片）
+    if glyphs:
+        _w = np.array([g.w for g in glyphs], dtype=np.float32)
+        _h = np.array([g.h for g in glyphs], dtype=np.float32)
+        _ink = np.array([g.ink for g in glyphs], dtype=np.float32)
+        mw, mh, mi = float(np.median(_w)), float(np.median(_h)), float(np.median(_ink))
+        kept = []
+        for g in glyphs:
+            if mw and mh and g.w < 0.22 * mw and g.h < 0.34 * mh:
+                continue
+            if mi and g.ink < 0.14 * mi:
+                continue
+            kept.append(g)
+        glyphs = kept
+    # 收紧边界：把旁边的墨点/邻居笔画尖角排除掉，别让框越画越大
+    if p.tighten_boxes and glyphs:
+        fixed = []
+        for g in glyphs:
+            nb = _tighten_box(mask2 > 0, (g.x0, g.y0, g.x1, g.y1), max(med_h, 1.0), p)
+            if nb != (g.x0, g.y0, g.x1, g.y1):
+                g.x0, g.y0, g.x1, g.y1 = nb
+                g.area = int(g.w * g.h)
+                g.ink = int((mask2[g.y0:g.y1, g.x0:g.x1] > 0).sum())
+                g.flags.append("tightened")
+            fixed.append(g)
+        glyphs = fixed
 
     # ---- reading order: columns right -> left, rows top -> bottom ---------
     glyphs.sort(key=lambda g: (-g.col, g.y0))

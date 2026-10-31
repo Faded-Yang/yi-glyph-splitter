@@ -188,3 +188,13 @@
 - 权重：f = min(1, log2(1+size)/log2(7))，user_score = sim × (0.75+0.25f)；最终分 = max(std, user_score)；UI 显示「出现过 N 次（+0.xx）」。
 - 实测（0003_left，594 字）：strong107/good338/warn142/low7（原 124/328/131/11），bonus 0~0.215；单页样本多数字形只出现 1 次，权重低——多收几页后共同字形成簇，分数会明显上来。
 - 坑：assign_clusters 变量改名后残留 f16 → NameError（已修）；math 未在 yi_ref 顶层 import（已修）。
+## 一键处理精度攻坚（2026-11-01 凌晨3，进行中）
+- 评估骨架：`scripts/bench_segmentation.py --from-out [--scale 0.25] [--model]` —— 直接读 `out/<页>/index.csv`（只读）+ `scans/<页>.tif`，与手工框 IoU≥0.5 匹配，输出 P/R/F1 与错误分类（merged/spurious/oversplit/dropped/offset）。
+- 参数搜索：`scripts/tune_segmentation.py`（坐标下降，目标=6 页平均 F1，0.25 图约 1s/页）。
+- 手工字形模型：`scripts/build_manual_refs.py` → `%LOCALAPPDATA%/yi-segment/glyphbank/refs_manual.npz`（3379 字形，48/16 特征）+ `tools/yi_core/glyphmodel.py`（NN 相似度，按页排除自身）。
+- 已上线改进（都写进 segment_v1.Params，可校准）：`_split_once` 行/列谷底补切（含 tight_box）、`_tighten_box` 收边界（去掉旁边墨点/邻居笔画尖角，offset 由 226→98）、`stain_filter`（凸包填充率>0.85 且 ink_frac>0.35 判污渍）、补切后丢「半截笔画」碎片。
+- 6 页实测（0.25 图，控制变量）：基线 0.8465 → 0.8789（补切+污渍+收边+碎片）→ 0.8821（wide_split_ratio 1.70 / tall_split_depth 0.80）。全分辨率终版（已写入用户校准）mean F1 **0.8768**，extra 526 / missed 336。
+- 死路①：**强制切高框**（h>1.55·med_h 无视谷底深度）→ 0.8786，比不加差；高框里混着真·高字。
+- 死路②：**NN 相似度过滤**——TP 中位 0.61 / spurious 0.44，按 sim<0.45 丢会误杀 57 个真框只换 38 个假框；`model_refine.py` 在 0.25 图无净收益，暂不接入 pipeline（保留模块备用）。
+- 硬约束：`out/` 只读（用户明确「可以读，不能写」）；手工框数量必须与 out 的 index.csv 一致（恢复页时用）。
+- 坑：bench 里 0.25 图坐标要 /scale 才能和手工全分辨率框比（踩过，导致 IoU 全 0）；脚本必须把 `tools/` 加进 sys.path 才能 import yi_core。
