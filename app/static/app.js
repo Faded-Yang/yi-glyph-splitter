@@ -1338,6 +1338,30 @@
         setColsVisible(chk.checked);
       });
     }
+    var addBtn = document.getElementById('btnColAdd');
+    if (addBtn) {
+      addBtn.addEventListener('click', function () {
+        if (!S.pageId) { toast('先选一页', 'warn'); return; }
+        var x = (view.mouse && view.mouse.x != null) ? view.mouse.x : ((S.page && (S.page.w || S.page.width)) || 0) / 2;
+        view.opts.onColumnAdd(x);
+      });
+    }
+    var delBtn = document.getElementById('btnColDel');
+    if (delBtn) {
+      delBtn.addEventListener('click', function () {
+        if (!S.pageId) { toast('先选一页', 'warn'); return; }
+        var cols = sortedCols();
+        if (cols.length < 2) { toast('至少要有两条线才能删', 'warn'); return; }
+        var mx = (view.mouse && view.mouse.x != null) ? view.mouse.x : null;
+        if (mx == null) { toast('把鼠标移到要删的那条线上再点', 'warn'); return; }
+        var best = -1, bestD = null;
+        for (var i = 1; i < cols.length; i++) {
+          var d = Math.abs(cols[i].x0 - mx);
+          if (bestD === null || d < bestD) { bestD = d; best = i; }
+        }
+        view.opts.onColumnDelete(best);
+      });
+    }
     var r = document.getElementById('btnColsReset');
     if (r) {
       r.addEventListener('click', function () {
@@ -1386,6 +1410,27 @@
     toast('学习完成：F1 ' + (b.f1 != null ? b.f1.toFixed(3) : '?') + ' → ' + (af.f1 != null ? af.f1.toFixed(3) : '?'), 'ok');
     await loadCalibrationInfo();
     toast('参数已保存，下次「一键处理」自动用它（无需重装）', 'ok');
+  }
+
+  function sortedCols() {
+    var cols = ((S.page && S.page.columns) || []).slice();
+    cols.sort(function (a, b) { return a.x0 - b.x0; });
+    return cols;
+  }
+
+  function saveColumns(cols, okText) {
+    var pid = S.pageId;
+    if (!pid) { return; }
+    var clean = cols.slice().sort(function (a, b) { return a.x0 - b.x0; })
+      .map(function (c) { return { x0: Math.round(c.x0), x1: Math.round(c.x1) }; });
+    API.put('/api/pages/' + encodeURIComponent(pid) + '/columns', { columns: clean }).then(function (r) {
+      if (S.pageId !== pid) { return; }
+      S.page = S.page || {};
+      S.page.columns = (r && r.columns) || clean;
+      view.setData({ w: S.page.w || S.page.width, h: S.page.h || S.page.height, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
+      renderPageInfo();
+      toast(okText || '分列已更新', 'ok');
+    }).catch(function (e) { toast('保存分列失败', 'err', e.message); });
   }
 
   function bindAll() {
@@ -1568,15 +1613,34 @@
         if (S.previewW < 3200 && S.page && S.page.w) { /* noop */ }
       },
       onColumnsChange: function (cols) {
-        var pid = S.pageId;
-        if (!pid) { return; }
-        API.put('/api/pages/' + encodeURIComponent(pid) + '/columns', { columns: cols }).then(function (r) {
-          if (S.pageId !== pid) { return; }
-          S.page = S.page || {};
-          S.page.columns = (r && r.columns) || cols;
-          view.setData({ w: S.page.w || S.page.width, h: S.page.h || S.page.height, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
-          toast('分列已更新（编号与导出顺序按新分列）', 'ok');
-        }).catch(function (e) { toast('保存分列失败', 'err', e.message); });
+        saveColumns(cols, '分列已更新（编号与导出顺序按新分列）');
+      },
+      onColumnDelete: function (ci) {
+        var cols = sortedCols();
+        if (ci <= 0 || ci >= cols.length) { return; }
+        var merged = { x0: cols[ci - 1].x0, x1: cols[ci].x1 };
+        var out = cols.slice(0, ci - 1).concat([merged]).concat(cols.slice(ci + 1));
+        saveColumns(out, '已删除一条分列线（两列合并）');
+      },
+      onColumnAdd: function (imgX) {
+        var cols = sortedCols();
+        if (!cols.length) { toast('这一页还没有分列数据', 'warn'); return; }
+        var i = -1;
+        for (var k = 0; k < cols.length; k++) {
+          if (imgX >= cols[k].x0 && imgX <= cols[k].x1) { i = k; break; }
+        }
+        if (i < 0) { toast('点在某一列内部才能加线', 'warn'); return; }
+        var c0 = cols[i];
+        var x = Math.round(imgX);
+        var MINW = 90;
+        if (x - c0.x0 < MINW || c0.x1 - x < MINW) {
+          toast('太窄了：两侧各至少 ' + MINW + ' px', 'warn');
+          return;
+        }
+        var out = cols.slice(0, i)
+          .concat([{ x0: c0.x0, x1: x }, { x0: x, x1: c0.x1 }])
+          .concat(cols.slice(i + 1));
+        saveColumns(out, '已添加一条分列线');
       },
       onEditEnd: function () {
         var eb = selBox();

@@ -8,6 +8,7 @@
     n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize'
   };
   var MIN_SIZE = 6;
+var MIN_COL_W = 90;   // 列最小宽度（窄于此拖不动，避免出现 40px 细条）
   var HS = 9;
 
   function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
@@ -301,7 +302,26 @@
     this.canvas.addEventListener('pointerup', function (e) { self._up(e); });
     this.canvas.addEventListener('pointercancel', function (e) { self._up(e); });
     this.canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-    this.canvas.addEventListener('dblclick', function (e) { e.preventDefault(); self.resetView(); });
+    this.canvas.addEventListener('dblclick', function (e) {
+      var p = self.screenPos(e);
+      var ci = self._colBoundaryAt(p.x);
+      if (ci > 0 && ci < self._colBounds().length - 1) {
+        e.preventDefault();
+        if (self.opts.onColumnDelete) { self.opts.onColumnDelete(ci); }
+        return;
+      }
+      e.preventDefault();
+      self.resetView();
+    });
+    this.canvas.addEventListener('pointerdown', function (e) {
+      if (!e.shiftKey) { return; }
+      var p = self.screenPos(e);
+      if (self.opts.onColumnAdd && self.showCols) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        self.opts.onColumnAdd(self.imgFromScreen(p.x, p.y).x);
+      }
+    }, true);
     this.canvas.addEventListener('wheel', function (e) { self._wheel(e); }, { passive: false });
     this.canvas.addEventListener('pointerleave', function () {
       self.mouse = null;
@@ -411,12 +431,18 @@
       return;
     }
     if (this.mode === 'col') {
-      var idx = this.drag.idx, cols = this.data.columns;
+      var cols = this._sortedColumns();
+      var idx = this.drag.idx;
       if (idx > 0 && idx < cols.length) {
         var left = cols[idx - 1], right = cols[idx];
-        var nx = clamp(ip.x, left.x0 + 40, right.x1 - 40);
-        left.x1 = rnd(nx); right.x0 = rnd(nx);
-        this.invalidate();
+        var lo = left.x0 + MIN_COL_W, hi = right.x1 - MIN_COL_W;
+        if (hi > lo) {
+          var nx = clamp(ip.x, lo, hi);
+          left.x1 = rnd(nx);
+          right.x0 = rnd(nx);
+          this._hoverCol = idx;
+          this.invalidate();
+        }
       }
       return;
     }
@@ -562,8 +588,14 @@
     this.invalidate();
   };
 
+  View.prototype._sortedColumns = function () {
+    var cols = (this.data.columns || []).slice();
+    cols.sort(function (a, b) { return a.x0 - b.x0; });
+    return cols;
+  };
+
   View.prototype._colBounds = function () {
-    var cols = this.data.columns || [];
+    var cols = this._sortedColumns();
     var out = [];
     for (var i = 0; i < cols.length; i++) {
       var c = cols[i];
@@ -576,11 +608,13 @@
   View.prototype._colBoundaryAt = function (sx) {
     if (!this.showCols) { return -1; }
     var bs = this._colBounds();
+    var best = -1, bestD = 8;   // 取最近的线；窄列时两条线在屏幕上很近，取第一条会抓错线
     for (var i = 0; i < bs.length; i++) {
       var px = bs[i] * this.scale + this.tx;
-      if (Math.abs(px - sx) <= 6) { return i; }
+      var d = Math.abs(px - sx);
+      if (d < bestD) { bestD = d; best = i; }
     }
-    return -1;
+    return best;
   };
 
   View.prototype._drawColumns = function () {

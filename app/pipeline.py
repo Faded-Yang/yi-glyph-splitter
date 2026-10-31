@@ -563,8 +563,11 @@ def refine_columns(store, pid, page: dict) -> dict:
             gray = page_gray(store, pid)
         prof = _ink_profile(gray, a, b)
         cut = _band_valley(prof, a)
-        if cut is None or not (a + 60 <= cut <= b - 60):
+        min_part = max(140, int(0.45 * med))
+        if cut is None or not (a + min_part <= cut <= b - min_part):
             cut = (a + b) // 2
+        if (cut - a) < min_part or (b - cut) < min_part:
+            break          # 再切就会切出细条，放弃
         cols[i:i + 1] = [(a, cut), (cut, b)]
         changed = True
     if not changed:
@@ -582,10 +585,54 @@ def ensure_columns(store, pid, page: dict = None) -> list:
     if page is None:
         page = store.load_page_json(pid)
     cols = page.get("columns") or []
-    if not cols or page.get("columns_manual") or page.get("columns_refined"):
+    if not cols:
         return cols
+    if page.get("columns_manual") or page.get("columns_refined"):
+        return _merge_slivers(_sorted_columns(cols))
     page = refine_columns(store, pid, page)
-    return page.get("columns") or []
+    return _merge_slivers(_sorted_columns(page.get("columns") or []))
+
+
+def _merge_slivers(cols, min_w: int = 90) -> list:
+    """Merge columns narrower than min_w into their wider neighbour (segmenter noise bands)."""
+    cols = [dict(c) for c in cols]
+    merged = False
+    while len(cols) > 1:
+        widths = [c["x1"] - c["x0"] for c in cols]
+        k = min(range(len(cols)), key=lambda i: widths[i])
+        if widths[k] >= min_w:
+            break
+        if k == 0:
+            nb = 1
+        elif k == len(cols) - 1:
+            nb = k - 1
+        else:
+            nb = k - 1 if widths[k - 1] >= widths[k + 1] else k + 1
+        cols[nb]["x0"] = min(cols[nb]["x0"], cols[k]["x0"])
+        cols[nb]["x1"] = max(cols[nb]["x1"], cols[k]["x1"])
+        del cols[k]
+        merged = True
+    out = []
+    for c in cols:
+        out.append({"idx": 0, "x0": int(c["x0"]), "x1": int(c["x1"])})
+    out.sort(key=lambda c: c["x0"])
+    for i, c in enumerate(out):
+        c["idx"] = i
+    return out if merged else cols
+
+
+def _sorted_columns(cols) -> list:
+    """Canonical left->right order (segment_v1 emits right->left; the UI assumes left->right)."""
+    out = []
+    for c in cols or []:
+        try:
+            out.append({"idx": 0, "x0": int(c["x0"]), "x1": int(c["x1"])})
+        except (KeyError, TypeError, ValueError):
+            continue
+    out.sort(key=lambda c: c["x0"])
+    for i, c in enumerate(out):
+        c["idx"] = i
+    return out
 
 
 def page_dict_for_export(store, pid, boxes) -> dict:

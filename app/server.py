@@ -426,9 +426,12 @@ def _page_columns(store, pid) -> list:
     out = []
     for i, c in enumerate(cols or []):
         try:
-            out.append({"idx": int(c.get("idx", i)), "x0": int(c["x0"]), "x1": int(c["x1"])})
+            out.append({"x0": int(c["x0"]), "x1": int(c["x1"])})
         except (KeyError, TypeError, ValueError):
             continue
+    out.sort(key=lambda c: c["x0"])
+    for i, c in enumerate(out):
+        c["idx"] = i
     return out
 
 
@@ -807,8 +810,8 @@ def create_app(project_dir: str = "") -> FastAPI:
             except (KeyError, TypeError, ValueError):
                 continue
             x0, x1 = max(0, min(W, x0)), max(0, min(W, x1))
-            if x1 - x0 < 30:
-                raise HTTPException(status_code=400, detail="列宽太窄（<30px）")
+            if x1 - x0 < 60:
+                raise HTTPException(status_code=400, detail="列宽太窄（<60px）")
             clean.append((x0, x1))
         clean.sort(key=lambda t: t[0])
         for a, b in zip(clean, clean[1:]):

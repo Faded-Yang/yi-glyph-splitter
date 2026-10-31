@@ -168,6 +168,8 @@
           <button class="btn" id="btnExportOne">切图本页</button>
           <button class="btn" id="btnReload">重新载入</button>
           <button class="btn" id="btnColsReset" title="按墨迹重新自动分列（会丢掉手动调整）">重置分列</button>
+          <button class="btn" id="btnColAdd" title="在鼠标所在的列内加一条分列线（也可 Shift+点击画布）">+ 加分列</button>
+          <button class="btn" id="btnColDel" title="删除离鼠标最近的一条分列线（也可双击那条线）">− 删分列</button>
         </div>
       </div>
     </aside>
@@ -204,7 +206,7 @@
     <div class="group-title">关于</div>
     <div class="dim" id="aboutBuild">版本 —</div>
     <div class="dim" id="calibInfo">学习参数：未学习（默认参数）</div>
-    <div class="dim" id="aboutHelp">拖动蓝色竖线可调整分列；「重置分列」按墨迹重新自动分列</div>
+    <div class="dim" id="aboutHelp">拖蓝色竖线调边界；双击线＝删除；Shift+点击列内＝加线；「重置分列」按墨迹重算</div>
 
     <div class="row-btns sticky">
       <button class="btn primary" id="btnSaveSettings">保存设置</button>

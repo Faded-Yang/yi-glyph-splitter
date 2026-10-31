@@ -152,3 +152,12 @@
 - 修法：字符串里要换行就用 String.fromCharCode(10) 或 \n，别在 python 侧拼接时把换行落进 JS 字面量。
 - **run_code 坑（已第 3 次踩）**：背包模板（反引号）里出现 Windows 路径 C:\Users\95959... 会被当成 \9 转义而整段解析失败（"\\8 and \\9 are not allowed in template strings"）。
   → 命令字符串里路径一律用正斜杠 C:/Users/...；或把内容先写成文件再执行。
+## 分列线：拖动错位 & 加删线（2026-10-31 晚10）
+- bug1（拖不动/闪到另一边）：page.json 的 columns 由 segment_v1 输出是**右→左**顺序，界面按左→右画/算，边界索引错位；
+  修法：pipeline._sorted_columns 统一左→右并重排 idx（ensure_columns 出口）+ 服务端 _page_columns 也排序。
+- bug2（抓不到想要的线）：_colBoundaryAt 原本取「6px 内第一条」，窄列两条线在屏幕上只差几像素 → 总抓错；
+  修法：取最近的一条（bestD 初始 8），并列才取前的。
+- 列宽：客户端 MIN_COL_W=90、新线两侧各 >=90；服务端校验 <60 直接拒。自动分列不再切出细条（min_part=max(140,0.45*median)）；
+  ensure_columns 还做 _merge_slivers：<90px 的噪声列与较宽邻列合并（0003_left 19 列含 40px 细条 -> 16 列 min 213）。
+- 加删线：双击分列线=删除；Shift+点击列内=加线（capture 监听 + stopImmediatePropagation）；右栏「+ 加分列 / − 删分列」按鼠标位置操作。
+- 验证（打包 exe 内 CDP）：16 列时拖第 5 条只动该条（changed=[5]）；加线 16->17、删线 17->16、双击删 16->15。
