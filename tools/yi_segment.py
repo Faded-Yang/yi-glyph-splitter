@@ -88,6 +88,24 @@ def collect_pages(inp: str, pattern: str | None = None) -> list:
     return out
 
 
+
+def _calibration_params():
+    """Learned segmentation params from data/calibration/segment_params.json (optional)."""
+    import json
+
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for cand in (os.path.join(here, "data", "calibration", "segment_params.json"),):
+        try:
+            if os.path.isfile(cand):
+                data = json.loads(open(cand, encoding="utf-8").read())
+                ov = data.get("params") or {}
+                if isinstance(ov, dict):
+                    return ov
+        except Exception:  # noqa: BLE001
+            pass
+    return {}
+
+
 def load_segment_module(spec: str):
     """Import the segmenter: a dotted module name, or a path to a .py file."""
     if not spec:
@@ -258,10 +276,24 @@ def process_page(task: dict) -> dict:
                     (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
                     interpolation=cv2.INTER_AREA,
                 )
-                page = seg.segment_page(small)
+                _cal = _calibration_params()
+                _par = None
+                if _cal and hasattr(seg, "Params"):
+                    try:
+                        _par = seg.Params(**_cal)
+                    except Exception:  # noqa: BLE001
+                        _par = None
+                page = seg.segment_page(small, params=_par)
                 page = _rescale_page(page, 1.0 / scale, width, height)
             else:
-                page = seg.segment_page(gray)
+                _cal = _calibration_params()
+                _par = None
+                if _cal and hasattr(seg, "Params"):
+                    try:
+                        _par = seg.Params(**_cal)
+                    except Exception:  # noqa: BLE001
+                        _par = None
+                page = seg.segment_page(gray, params=_par)
                 page["width"], page["height"] = int(width), int(height)
             del gray  # free ~70 MB before pulling the RGB page
 

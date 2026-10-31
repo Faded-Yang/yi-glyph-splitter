@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 import os
 import re
 import statistics
@@ -21,6 +22,8 @@ import time
 from pathlib import Path
 
 from . import paths, store as store_mod
+
+log = logging.getLogger("yi_segment.pipeline")
 
 # ------------------------------------------------------------- tools on path
 _TOOLS_DIR = None
@@ -142,6 +145,41 @@ def build_preview(store, pid, *, width: int = PREVIEW_W) -> Path:
 
 
 # ---------------------------------------------------------------- process page
+
+# ------------------------------------------------------------------ calibration
+def calibration_file() -> str:
+    """Learned segmentation params (from a human-corrected page), if any."""
+    from . import paths as paths_mod
+
+    cands = [
+        paths_mod.data_dir() / "calibration" / "segment_params.json",
+        paths_mod.resource_path("data", "calibration", "segment_params.json"),
+        paths_mod.app_root().parent / "data" / "calibration" / "segment_params.json",
+    ]
+    for c in cands:
+        try:
+            if c.is_file():
+                return str(c)
+        except OSError:
+            continue
+    return ""
+
+
+def calibration_params():
+    """(overrides dict, source path) loaded from the learned profile."""
+    fp = calibration_file()
+    if not fp:
+        return {}, ""
+    try:
+        data = json.loads(open(fp, encoding="utf-8").read())
+        ov = data.get("params") or {}
+        if isinstance(ov, dict):
+            return ov, fp
+    except Exception:  # noqa: BLE001
+        log.warning("calibration file unreadable: %s", fp, exc_info=True)
+    return {}, ""
+
+
 def process_page(store, pid, progress_cb=None, cancel_cb=None, *, force: bool = False) -> dict:
     """Read -> segment_v1.segment_page -> page.json + boxes.json + preview.png.
 
@@ -174,7 +212,15 @@ def process_page(store, pid, progress_cb=None, cancel_cb=None, *, force: bool = 
         check_cancel(cancel_cb)
         _cb(progress_cb, 0.15, "分割中（可能需要十几秒）")
         t = time.time()
-        page = S1.segment_page(gray)
+        ov, cal_src = calibration_params()
+        seg_params = None
+        if ov:
+            try:
+                seg_params = S1.Params(**ov)
+                log.info("segmentation uses learned params from %s: %s", cal_src, ov)
+            except Exception:  # noqa: BLE001 - bad profile must not break processing
+                log.warning("bad calibration params, using defaults", exc_info=True)
+        page = S1.segment_page(gray, params=seg_params)
         timings["segment"] = time.time() - t
         check_cancel(cancel_cb)
         page = dict(page or {})

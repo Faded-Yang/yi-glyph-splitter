@@ -68,6 +68,11 @@ class Params:
     ps_part_frac: float = 0.48   # each part must be at least this * H
     ps_w_ratio: float = 1.55     # column split when w > ratio * h
     bbox_clip: float = 0.45      # clip a glyph bbox to band +- this * band width
+    # --- learning post-pass: split boxes that are still two glyphs ----------
+    tall_split: bool = False     # enabled from data/calibration/segment_params.json
+    tall_split_ratio: float = 1.30  # split when h > this * median glyph height
+    tall_split_depth: float = 0.65  # valley row ink must be < this * median row ink
+    tall_split_min_part: float = 0.35  # each half must be >= this * median height
     # --- misc ---------------------------------------------------------------
     verbose: bool = False
 
@@ -377,6 +382,56 @@ def _post_split(box, mask: np.ndarray, H: float, p: Params):
 
 
 # ------------------------------------------------------------------ main
+def _split_tall_boxes(glyphs, mask, med_h: float, p: "Params"):
+    """Learnable post-pass: boxes taller than usual are usually two glyphs.
+
+    Splits at the deepest ink valley of the box's row profile (works even when
+    the two glyphs touch, unlike _post_split which needs a blank band).
+    """
+    if not p.tall_split or med_h <= 0 or not glyphs:
+        return glyphs
+    out = []
+    for g in glyphs:
+        if g.h <= p.tall_split_ratio * med_h:
+            out.append(g)
+            continue
+        sub_ = mask[g.y0:g.y1, g.x0:g.x1]
+        if sub_.size == 0 or sub_.shape[0] < 20:
+            out.append(g)
+            continue
+        prof = sub_.sum(axis=1).astype(np.float32)
+        h = int(prof.size)
+        lo, hi = int(h * 0.28), int(h * 0.72)
+        seg = prof[lo:hi]
+        if seg.size < 6:
+            out.append(g)
+            continue
+        k = max(3, h // 16)
+        ker = np.ones(k, np.float32) / float(k)
+        seg2 = np.convolve(seg, ker, mode="same")
+        idx = int(np.argmin(seg2))
+        med = float(np.median(seg2))
+        cut = g.y0 + lo + idx
+        top, bottom = cut - g.y0, g.y1 - cut
+        if min(top, bottom) < p.tall_split_min_part * med_h:
+            out.append(g)
+            continue
+        if med > 0 and float(seg2[idx]) > p.tall_split_depth * med:
+            out.append(g)
+            continue
+        a = copy.copy(g)
+        b = copy.copy(g)
+        a.y1 = cut - 1
+        b.y0 = cut
+        a.flags = list(g.flags) + ["split_tall"]
+        b.flags = list(g.flags) + ["split_tall"]
+        a.area = int(a.w * a.h)
+        b.area = int(b.w * b.h)
+        out.append(a)
+        out.append(b)
+    return out
+
+
 def segment_page(gray: np.ndarray, *, base_scale: float = 1.0, params: Params | None = None,
                  debug: dict | None = None) -> dict:
     """Segment one page.  Coordinates in the result are in gray's pixel space."""
@@ -562,6 +617,7 @@ def segment_page(gray: np.ndarray, *, base_scale: float = 1.0, params: Params | 
         g.area = int(g.w * g.h)
         out.append(g)
     glyphs = out
+    glyphs = _split_tall_boxes(glyphs, mask2 > 0, med_h, p)  # 学习到的补切（两字粘连）
 
     # ---- reading order: columns right -> left, rows top -> bottom ---------
     glyphs.sort(key=lambda g: (-g.col, g.y0))

@@ -1,0 +1,44 @@
+{
+ "source_tif": "彝族扫描3-0002_right.tif",
+ "manual_export": "彝族扫描3-0002_right",
+ "learned_at": "2026-10-31 18:26",
+ "params": {
+  "cut_base": 0.6,
+  "ps_w_ratio": 1.7,
+  "core_frac_min": 0.22,
+  "tall_split": true,
+  "tall_split_ratio": 1.45
+ },
+ "before": {
+  "auto": 520,
+  "manual": 551,
+  "matched": 449,
+  "missed": 102,
+  "extra": 71,
+  "precision": 0.8635,
+  "recall": 0.8149,
+  "f1": 0.8385,
+  "iou_median": 1.0,
+  "iou_p10": 0.58,
+  "seconds": 6.2
+ },
+ "after": {
+  "auto": 577,
+  "manual": 551,
+  "matched": 484,
+  "missed": 67,
+  "extra": 93,
+  "precision": 0.8388,
+  "recall": 0.8784,
+  "f1": 0.8582,
+  "iou_median": 1.0,
+  "iou_p10": 0.6116,
+  "seconds": 26.7
+ },
+ "bias": {
+  "dx_median": 0.0,
+  "dy_median": 0.0,
+  "w_ratio_median": 1.0,
+  "h_ratio_median": 1.0
+ }
+}

@@ -38,3 +38,7 @@ docs/style/*.jpg
 # glyph bank: git keeps the text copy, the npz is rebuilt locally
 data/glyphbank/bank.npz
 data/glyphbank/raw_index.json
+
+# raw scans are huge
+scans/*.tif
+scans/*.tiff

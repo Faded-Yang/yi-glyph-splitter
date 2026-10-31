@@ -40,6 +40,7 @@ datas = [
     (os.path.join(ROOT, "app", "static"), os.path.join("app", "static")),
     (os.path.join(ROOT, "tools"), "tools"),
     (os.path.join(ROOT, "data", "glyphbank"), os.path.join("data", "glyphbank")),
+    (os.path.join(ROOT, "data", "calibration"), os.path.join("data", "calibration")),
 ] + list(_wv_data)
 
 a = Analysis(

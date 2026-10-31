@@ -44,6 +44,31 @@ Pillow、FastAPI…），不需要用户先装 Python——这也是 exe 可以�
 
 见 `docs/CLI.md`。
 
+## 素材与「从人工修正中学习」
+
+### 原始扫描件
+
+10 页原始 `.tif` 放在 `scans/`（每页约 200 MB，不进 git）。程序里「导入 TIF / 导入文件夹」直接选这里；
+换机器把整个 `scans/` 拷走即可。导出结果不要放这里（默认写 `<项目>/exports/`）。
+
+### 让程序从你的手工修正里学
+
+把你在程序里改好的那一页导出（如 `out/彝族扫描3-0002_right/`，含 index.csv 与 001.png…），然后：
+
+    python scripts/learn_from_correction.py \
+        --export "out/彝族扫描3-0002_right" \
+        --tif "scans/彝族扫描3-0002_right.tif"
+
+脚本会：① 读你的人工框；② 跑一遍自动分割；③ 逐框 IoU 匹配、统计漏框/多框；④ 在 1/4 图上爬山调
+几个关键参数，再在全分辨率上专门调「两字粘连」的补切参数；⑤ 写 `data/calibration/segment_params.json`
+（同时复制到 `%LOCALAPPDATA%\yi-segment\calibration\`，装好的程序立刻生效）。
+
+本页实测：**F1 0.8385 → 0.8582**，召回率 **0.815 → 0.878**（自动找回 34 个你手工补的框）；
+IoU 中位保持 1.000（你保留的框本来就与自动框完全一致）。主要错误是「两字粘连成一个高框」→ 新增
+`tall_split` 补切（按行墨量谷底切，不要求有空隙）。学习参数在另一页（0003_left）上试跑：746 → 767 框，无异常膨胀。
+
+下一次「一键处理」会自动带上这些参数；不满意就删掉 `data/calibration/segment_params.json` 恢复默认。
+
 ## 流程（桌面程序）
 
 | 步骤 | 操作 | 说明 |
