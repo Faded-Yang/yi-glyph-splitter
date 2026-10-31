@@ -397,7 +397,6 @@
     if (!S.pageId) { return; }
     pushUndo();
     fn();
-    clearRefDashes();
     setSaveState('dirty');
     view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
     renderInspector(); renderHint(); renderPageInfo(); renderRef();
@@ -433,24 +432,14 @@
   }
 
   // ------------------------------------------------------------------ 框操作
-  // 规范字校验的虚线只是「扫一眼」的临时提示：一旦用户开始动手（点选/改框），
-  // 全局虚线立即消失，避免长期糊在画布上。分数数据仍保留，右栏照常显示。
-  function clearRefDashes() {
-    var n = 0;
-    S.boxes.forEach(function (b) { if (b.refLevel) { b.refLevel = ''; n += 1; } });
-    if (n && S.page) {
-      view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
-    }
-    return n;
-  }
-
+  // 规范字校验的虚线是**长期**提示：编辑框、选框都不会清掉它；
+  // 只有重新跑「规范字校验」或切页载入新的 refcheck 结果时才会更新。
   function setSel(id, opts) {
     var focus = !(opts && opts.focus === false);
     S.selId = id;
     view.setSelId(id);
     // focus:false 时只换选中态，不动画布视角（删框/新建框后就该这样）
     if (focus && id != null) { var b = selBox(); if (b) { view.ensureVisible(b); } }
-    if (!(opts && opts.keepDash)) { clearRefDashes(); }
     renderInspector(); renderHint(); renderRef();
   }
   function stepSel(dir) {
@@ -779,7 +768,7 @@
     var cur = selBox();
     var i = lows.indexOf(cur);
     var n = lows[(i + 1) % lows.length];
-    setSel(n.id, { keepDash: true });
+    setSel(n.id);
   }
 
   function muted(text) { return el('div', 'muted pad', text); }
