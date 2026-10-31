@@ -1,16 +1,22 @@
-"""In-app one-click learning: tune segmentation params from the boxes you edited.
+"""In-app one-click learning WITH ACCUMULATION.
 
-This is the same idea as scripts/learn_from_correction.py but takes the
-reference boxes straight from the page's boxes.json (what you fixed in the
-app), so no export round-trip is needed and no rebuild: the profile is written
-to %LOCALAPPDATA%\\yi-segment\\calibration\\segment_params.json, which
-pipeline.calibration_params() prefers over the bundled default.
+Every time you learn from a page, that page's boxes are kept as a reference
+under %LOCALAPPDATA%/yi-segment/calibration/references/, and the parameters are
+re-derived from ALL stored references (mean F1 over pages).  So learning a new
+page does not throw away earlier evidence: it adds to it.  The current
+parameters are used as the starting point of the search.
+
+Per-user files (never committed):
+    calibration/segment_params.json        current parameters + stats
+    calibration/references/<page>.json     {tif, boxes[[x0,y0,x1,y1],...]}
 """
 from __future__ import annotations
 
 import dataclasses
+import glob
 import json
 import os
+import re
 import time
 
 import cv2
@@ -22,6 +28,8 @@ from yi_core import segment_v1 as S1
 
 IOU_THR = 0.5
 SEARCH_SCALE = 0.25
+MAX_REFS = 8          # keep the most recent N pages of evidence
+MAX_FULL_PAGES = 3    # full-resolution stage looks at most at N pages
 
 SEARCH = [
     ("cut_base", [0.6, 0.9, 1.2]),
@@ -77,8 +85,82 @@ def _boxes_of(page, scale):
              int(round(g["x1"] / scale)), int(round(g["y1"] / scale))) for g in page["glyphs"]]
 
 
+def _safe_name(text: str) -> str:
+    return re.sub(r"[^0-9A-Za-z_\u4e00-\u9fff.-]+", "_", text)[:80] or "page"
+
+
+def _ref_dir():
+    d = paths.data_dir() / "calibration" / "references"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def load_references() -> list:
+    refs = []
+    for fp in sorted(glob.glob(str(_ref_dir() / "*.json"))):
+        try:
+            data = json.loads(open(fp, encoding="utf-8").read())
+            tif = data.get("tif") or ""
+            boxes = [(int(b[0]), int(b[1]), int(b[2]), int(b[3])) for b in data.get("boxes") or []]
+            if tif and os.path.isfile(tif) and boxes:
+                refs.append({"file": fp, "tif": tif, "name": data.get("name") or os.path.basename(tif),
+                             "boxes": boxes, "saved_at": data.get("saved_at") or ""})
+        except Exception:  # noqa: BLE001
+            continue
+    return refs
+
+
+def _save_reference(tif: str, name: str, boxes) -> str:
+    fp = os.path.join(str(_ref_dir()), _safe_name(os.path.splitext(name)[0]) + ".json")
+    payload = {"tif": os.path.abspath(tif), "name": name,
+               "saved_at": time.strftime("%Y-%m-%d %H:%M"),
+               "boxes": [[int(b[0]), int(b[1]), int(b[2]), int(b[3])] for b in boxes]}
+    with open(fp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    return fp
+
+
+def _trim_references(refs):
+    refs = list(refs)
+    while len(refs) > MAX_REFS:
+        refs.sort(key=lambda r: r.get("saved_at") or "")
+        try:
+            os.remove(refs[0]["file"])
+        except OSError:
+            pass
+        refs.pop(0)
+    return refs
+
+
+def _current_params() -> dict:
+    fp = paths.data_dir() / "calibration" / "segment_params.json"
+    try:
+        data = json.loads(open(str(fp), encoding="utf-8").read())
+        params = data.get("params") or {}
+        return params if isinstance(params, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _load_pages(refs, progress_cb, cancel_cb) -> list:
+    pages = []
+    for r in refs:
+        if cancel_cb and cancel_cb():
+            raise store_mod.StoreError("已取消")
+        if progress_cb:
+            progress_cb(0.05, "载入样本 %s" % r["name"])
+        try:
+            gray = C.load_gray(r["tif"])
+        except Exception:  # noqa: BLE001
+            continue
+        h, w = gray.shape[:2]
+        small = cv2.resize(gray, (max(50, int(w * SEARCH_SCALE)), max(50, int(h * SEARCH_SCALE))),
+                           interpolation=cv2.INTER_AREA)
+        pages.append({"name": r["name"], "gray": gray, "small": small, "manual": r["boxes"]})
+    return pages
+
+
 def learn_from_page(store, pid, progress_cb=None, cancel_cb=None) -> dict:
-    """Search params that best reproduce the boxes.json of this page."""
     def cb(frac, msg):
         if progress_cb:
             progress_cb(frac, msg)
@@ -95,85 +177,90 @@ def learn_from_page(store, pid, progress_cb=None, cancel_cb=None) -> dict:
         raise store_mod.StoreError("这一页还没有框，无法学习")
 
     t_start = time.time()
-    cb(0.04, "读取原始扫描")
-    gray = C.load_gray(src)
-    h, w = gray.shape[:2]
-    small = cv2.resize(gray, (max(50, int(w * SEARCH_SCALE)), max(50, int(h * SEARCH_SCALE))),
-                       interpolation=cv2.INTER_AREA)
-    if cancelled():
-        raise store_mod.StoreError("已取消")
+    cb(0.03, "登记这一页的标准答案")
+    _save_reference(src, entry.get("name") or pid, manual)
+    refs = _trim_references(load_references())
+    if not refs:
+        raise store_mod.StoreError("没有可用的学习样本")
 
-    def evaluate(overrides, scale, frac_lo, msg):
+    pages = _load_pages(refs, cb, cancelled)
+    if not pages:
+        raise store_mod.StoreError("学习样本读不到（源文件被移动了？）")
+
+    def evaluate(overrides, scale):
         params = dataclasses.replace(S1.Params(), **overrides) if overrides else S1.Params()
-        img = small if scale != 1.0 else gray
-        page = S1.segment_page(img, base_scale=scale, params=params)
-        st = score(_boxes_of(page, scale), manual)
-        if progress_cb:
-            progress_cb(frac_lo, msg)
-        return st
+        per = {}
+        for pg in pages:
+            img = pg["small"] if scale != 1.0 else pg["gray"]
+            page = S1.segment_page(img, base_scale=scale, params=params)
+            per[pg["name"]] = score(_boxes_of(page, scale), pg["manual"])
+        mean_f1 = float(np.mean([v["f1"] for v in per.values()]))
+        return round(mean_f1, 4), per
 
-    cb(0.08, "基线：跑一遍当前分割")
-    params_default = S1.Params()
-    base_page = S1.segment_page(small, base_scale=SEARCH_SCALE, params=params_default)
-    before = score(_boxes_of(base_page, SEARCH_SCALE), manual)
+    seed = {k: v for k, v in _current_params().items()
+            if isinstance(v, (int, float, bool))}
+    cb(0.1, "基线（%d 页样本）" % len(pages))
+    base_f1, _ = evaluate(seed, SEARCH_SCALE)
     if cancelled():
         raise store_mod.StoreError("已取消")
 
-    # ---- stage 1: coarse search at 1/4 scale
-    overrides = {}
-    cur = evaluate(overrides, SEARCH_SCALE, 0.1, "粗搜")
-    total_trials = sum(len(v) for _, v in SEARCH)
+    overrides = dict(seed)
+    cur = base_f1
+    total = sum(len(v) for _, v in SEARCH)
     done = 0
     for name, values in SEARCH:
         for v in values:
             if cancelled():
                 raise store_mod.StoreError("已取消")
+            if overrides.get(name) == v:
+                done += 1
+                continue
             trial = dict(overrides)
             trial[name] = v
-            st = evaluate(trial, SEARCH_SCALE, 0.1, "%s=%s" % (name, v))
+            f1, _ = evaluate(trial, SEARCH_SCALE)
             done += 1
-            cb(0.1 + 0.45 * done / max(1, total_trials), "粗搜 %s=%s（F1 %.3f）" % (name, v, st["f1"]))
-            if (st["f1"], st["iou_median"]) > (cur["f1"], cur["iou_median"]):
-                overrides, cur = trial, st
+            cb(0.1 + 0.45 * done / max(1, total), "%s=%s（平均 F1 %.3f）" % (name, v, f1))
+            if f1 > cur:
+                overrides, cur = trial, f1
 
-    # ---- stage 2: tall-split trials on the full image (most common error)
-    cur_full = None
-    trials = [
-        {"tall_split": True, "tall_split_ratio": 1.30},
-        {"tall_split": True, "tall_split_ratio": 1.45},
-    ]
-    for k, t in enumerate(trials):
+    full_pages = pages[:MAX_FULL_PAGES]
+
+    def evaluate_full(ov):
+        params = dataclasses.replace(S1.Params(), **ov) if ov else S1.Params()
+        per = {}
+        for pg in full_pages:
+            page = S1.segment_page(pg["gray"], base_scale=1.0, params=params)
+            per[pg["name"]] = score(_boxes_of(page, 1.0), pg["manual"])
+        return round(float(np.mean([v["f1"] for v in per.values()])), 4), per
+
+    cb(0.6, "整页校验（%d 页）" % len(full_pages))
+    best_full_f1, best_full_per = evaluate_full(overrides)
+    best_overrides = dict(overrides)
+    for k, t in enumerate(({"tall_split": True, "tall_split_ratio": 1.30},
+                           {"tall_split": True, "tall_split_ratio": 1.45})):
         if cancelled():
             raise store_mod.StoreError("已取消")
         trial = dict(overrides)
         trial.update(t)
-        params = S1.Params(**trial)
-        page = S1.segment_page(gray, params=params)
-        st = score(_boxes_of(page, 1.0), manual)
-        cb(0.55 + 0.35 * (k + 1) / len(trials), "整页试切 %s（F1 %.3f）" % (t["tall_split_ratio"], st["f1"]))
-        if cur_full is None or (st["f1"], st["iou_median"]) > (cur_full["f1"], cur_full["iou_median"]):
-            cur_full = st
-            best_overrides = trial
-        if cancelled():
-            raise store_mod.StoreError("已取消")
-    if cur_full is None:
-        best_overrides = dict(overrides)
-        params = S1.Params(**best_overrides) if best_overrides else S1.Params()
-        cur_full = score(_boxes_of(S1.segment_page(gray, params=params), 1.0), manual)
+        f1, per = evaluate_full(trial)
+        cb(0.6 + 0.3 * (k + 1) / 2.0, "整页试切 %s（平均 F1 %.3f）" % (t["tall_split_ratio"], f1))
+        if f1 > best_full_f1:
+            best_full_f1, best_full_per, best_overrides = f1, per, trial
 
-    after = cur_full
     profile = {
-        "source_page": os.path.basename(entry.get("name") or pid),
         "learned_at": time.strftime("%Y-%m-%d %H:%M"),
-        "page_box_count": len(manual),
         "params": best_overrides,
-        "before": before,
-        "after": after,
+        "pages_used": [{"name": p["name"], "boxes": len(p["manual"])} for p in pages],
+        "pages_count": len(pages),
+        "full_check_pages": [p["name"] for p in full_pages],
+        "mean_f1": best_full_f1,
+        "per_page": best_full_per,
+        "this_page": {"name": entry.get("name") or pid, "boxes": len(manual)},
     }
     out_dir = paths.data_dir() / "calibration"
     out_dir.mkdir(parents=True, exist_ok=True)
     fp = out_dir / "segment_params.json"
-    with open(fp, "w", encoding="utf-8") as f:
+    with open(str(fp), "w", encoding="utf-8") as f:
         json.dump(profile, f, ensure_ascii=False, indent=1)
     cb(0.99, "保存参数")
     profile["file"] = str(fp)

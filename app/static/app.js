@@ -1387,7 +1387,11 @@
         return;
       }
       var txt = keys.map(function (k) { return k + '=' + params[k]; }).join(' ');
-      el.textContent = '学习参数：' + txt + (info.learned_at ? ('（' + info.learned_at + (info.source_page ? ' · ' + info.source_page : '') + '）') : '');
+      var extra = '';
+      if (info.pages_count) {
+        extra = ' · 累计 ' + info.pages_count + ' 页' + (info.mean_f1 != null ? (' · 平均 F1 ' + Number(info.mean_f1).toFixed(3)) : '');
+      }
+      el.textContent = '学习参数：' + txt + (info.learned_at ? ('（' + info.learned_at + extra + '）') : extra);
     } catch (e) { el.textContent = '学习参数：读取失败'; }
   }
 
@@ -1395,7 +1399,16 @@
     var pid = S.pageId;
     if (!pid) { toast('先在左栏选一页', 'warn'); return; }
     if (!S.boxes.length) { toast('这一页还没有框，先处理', 'warn'); return; }
-        var _msg = '用「' + ((pageById(pid) || {}).name || pid) + '」当前的 ' + S.boxes.length + ' 个框作为标准答案，重新学习分割参数？' + String.fromCharCode(10) + String.fromCharCode(10) + '会覆盖现有学习结果（可随时再用别的页学）。';
+        var prevPages = 0;
+    try {
+      var info0 = await API.get('/api/calibration');
+      prevPages = (info0 && info0.pages_count) || 0;
+    } catch (e) { /* ignore */ }
+    var _msg = '把「' + ((pageById(pid) || {}).name || pid) + '」当前的 ' + S.boxes.length + ' 个框加入学习样本？'
+      + String.fromCharCode(10) + String.fromCharCode(10)
+      + '· 样本会累加：之前学过的 ' + prevPages + ' 页会继续保留，和新页一起重算参数'
+      + String.fromCharCode(10)
+      + '· 只替换「参数」，旧页的样本不会丢（可在设置里看到累计页数）';
     if (!window.confirm(_msg)) { return; }
     if (S.dirty) { try { await flushSave(); } catch (e) { /* ignore */ } }
     var res;
@@ -1404,8 +1417,9 @@
     var rec = await trackJob(res.job_id, { kind: 'learn', label: '学习分割参数', pageIds: [pid] });
     if (!rec || rec.state !== 'done') { return; }
     var prof = ((rec.results || [])[0] || {}).profile || {};
-    var b = prof.before || {}, af = prof.after || {};
-    toast('学习完成：F1 ' + (b.f1 != null ? b.f1.toFixed(3) : '?') + ' → ' + (af.f1 != null ? af.f1.toFixed(3) : '?'), 'ok');
+    var pages = prof.pages_count || 0;
+    var mean = prof.mean_f1;
+    toast('学习完成：累计 ' + pages + ' 页，平均 F1 ' + (mean != null ? Number(mean).toFixed(3) : '?'), 'ok');
     await loadCalibrationInfo();
     toast('参数已保存，下次「一键处理」自动用它（无需重装）', 'ok');
   }

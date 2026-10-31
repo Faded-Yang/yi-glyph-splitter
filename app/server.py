@@ -403,9 +403,14 @@ def _calibration_info() -> dict:
         return info
     try:
         data = json.loads(open(fp, encoding="utf-8").read())
+        pages_used = data.get("pages_used") or data.get("pages") or []
         info.update({"params": data.get("params") or {},
                      "learned_at": data.get("learned_at") or "",
-                     "source_page": data.get("source_page") or ((data.get("pages") or [{}])[0].get("export") if data.get("pages") else ""),
+                     "source_page": data.get("source_page") or ((pages_used[0].get("name") or pages_used[0].get("export")) if pages_used else ""),
+                     "pages_count": int(data.get("pages_count") or len(pages_used) or 0),
+                     "pages_used": pages_used,
+                     "mean_f1": data.get("mean_f1"),
+                     "this_page": data.get("this_page") or {},
                      "before": data.get("before") or {},
                      "after": data.get("after") or {}})
     except Exception:  # noqa: BLE001
