@@ -14,7 +14,7 @@ hidden = [
     "uvicorn.lifespan.on",
     "yi_core", "yi_core.common", "yi_core.segment_v1", "yi_core.export", "yi_core.qc",
     "app", "app.run", "app.server", "app.store", "app.jobs", "app.pipeline",
-    "app.ai_refine", "app.config", "app.paths",
+    "app.config", "app.paths",
     # native window: pywebview -> pythonnet -> WebView2
     "webview", "webview.platforms.winforms", "webview.platforms.edgechromium",
     "clr", "pythonnet", "clr_loader",
@@ -34,6 +34,7 @@ hidden = list(dict.fromkeys(hidden + _wv_hidden))
 datas = [
     (os.path.join(ROOT, "app", "static"), os.path.join("app", "static")),
     (os.path.join(ROOT, "tools"), "tools"),
+    (os.path.join(ROOT, "data", "glyphbank"), os.path.join("data", "glyphbank")),
 ] + list(_wv_data)
 
 a = Analysis(

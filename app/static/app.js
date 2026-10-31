@@ -25,7 +25,7 @@
     hist: [], redo: [], lastSnap: '',
     dirty: false, saveState: 'idle', saveTimer: null, saving: false,
     jobs: {}, jobOrder: [], jobProgress: {}, pollTimer: null, activeJobId: null,
-    proposals: [], aiAvailable: true, aiConfigured: false,
+    refby: {}, refStats: null,
     previewW: 1600, previewToken: 1, previewRebuildTried: -1, detailTimer: null, detailRect: null,
     checked: {}, filter: '', armed: false, modalOpen: null,
     tempId: 1, lastExportOut: ''
@@ -195,10 +195,10 @@
   }
 
   function clearPage() {
-    S.pageId = null; S.page = null; S.boxes = []; S.selId = null; S.proposals = [];
+    S.pageId = null; S.page = null; S.boxes = []; S.selId = null; S.refby = {}; S.refStats = null;
     view.setData({ w: 0, h: 0, boxes: [], selId: null, columns: [] });
     view.setImage('');
-    renderPages(); renderInspector(); renderAI(); renderPageInfo(); renderHint();
+    renderPages(); renderInspector(); renderRef(); renderPageInfo(); renderHint();
     setStageHint('还没有页面：先导入 TIF 或文件夹');
   }
 
@@ -206,7 +206,7 @@
     if (!pid) { return; }
     if (S.pageId === pid && S.page) { return; }
     if (S.dirty) { await flushSave(); }
-    S.pageId = pid; S.selId = null; S.armed = false; S.dirty = false; S.proposals = [];
+    S.pageId = pid; S.selId = null; S.armed = false; S.dirty = false; S.refby = {}; S.refStats = null;
     setSaveState('saved');
     view.setArmed(false);
     var res;
@@ -225,7 +225,6 @@
       columns: pg.columns || [], source: pg.source || ''
     };
     S.pageStatus = res.status || '';
-    S.aiAvailable = res.ai_available !== false;
     S.boxes = (res.boxes || []).map(normBox);
     S.tempId = S.boxes.reduce(function (m, b) { return Math.max(m, b.id || 0); }, 0) + 1;
     var sum = pageById(pid);
@@ -240,8 +239,8 @@
     view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: null, columns: S.page.columns });
     setStageHint(S.boxes.length ? '' : '该页还没有框：先「处理本页」，或按 A 在画布上手动框选');
     loadPreview();
-    renderPages(); renderPageInfo(); renderInspector(); renderAI(); renderHint();
-    loadProposals(pid);
+    renderPages(); renderPageInfo(); renderInspector(); renderRef(); renderHint();
+    loadRefCheck(pid);
   }
 
   function normBox(b) {
@@ -288,7 +287,6 @@
     if (S.pageId !== pid) { return; }
     S.boxes = (res.boxes || []).map(normBox);
     S.pageStatus = res.status || '';
-    S.aiAvailable = res.ai_available !== false;
     var sum = pageById(pid);
     if (sum) {
       sum.n_boxes = S.boxes.length;
@@ -299,7 +297,8 @@
     S.selId = null; S.dirty = false; setSaveState('saved');
     view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: null, columns: S.page.columns });
     loadPreview();
-    renderInspector(); renderAI(); renderHint(); renderPages(); renderPageInfo();
+    renderInspector(); renderRef(); renderHint(); renderPages(); renderPageInfo();
+    if (S.refStats) { loadRefCheck(pid); }
     toast('已重新载入本页', 'ok');
   }
 
@@ -377,7 +376,7 @@
     if (S.selId != null && !S.boxes.some(function (b) { return b.id === S.selId; })) { S.selId = null; }
     view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
     setSaveState('dirty');
-    renderInspector(); renderHint(); renderAI();
+    renderInspector(); renderHint(); renderRef();
     scheduleSave();
   }
   function undo() {
@@ -400,7 +399,7 @@
     fn();
     setSaveState('dirty');
     view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
-    renderInspector(); renderHint(); renderPageInfo(); renderAI();
+    renderInspector(); renderHint(); renderPageInfo(); renderRef();
     scheduleSave();
   }
 
@@ -433,10 +432,12 @@
   }
 
   // ------------------------------------------------------------------ 框操作
-  function setSel(id) {
+  function setSel(id, opts) {
+    var focus = !(opts && opts.focus === false);
     S.selId = id;
     view.setSelId(id);
-    if (id != null) { var b = selBox(); if (b) { view.ensureVisible(b); } }
+    // focus:false 时只换选中态，不动画布视角（删框后就该这样）
+    if (focus && id != null) { var b = selBox(); if (b) { view.ensureVisible(b); } }
     renderInspector(); renderHint();
   }
   function stepSel(dir) {
@@ -465,7 +466,8 @@
     });
     var after = readingOrder();
     var next = after[Math.min(idx, after.length - 1)] || null;
-    if (next) { setSel(next.id); }
+    // 选中下一个框但**不移动视角**：连续删框时画面不跳
+    if (next) { setSel(next.id, { focus: false }); }
     toast('已删除 1 框', 'ok');
   }
   function splitSel() {
@@ -659,93 +661,115 @@
     });
   }
 
-  // ------------------------------------------------------------------ AI 建议
-  function actionLabel(a) {
-    return { tighten: '收紧', split: '拆分', merge: '合并', keep: '保持' }[a] || (a || '建议');
-  }
-  function propIndex(p, i) { return p.index != null ? p.index : i; }
-
-  function loadProposals(pid) {
-    S.proposals = [];
-    renderAI();
-    API.get('/api/pages/' + encodeURIComponent(pid) + '/proposals').then(function (r) {
-      if (S.pageId !== pid) { return; }
-      S.proposals = (r && r.proposals) || [];
-      S.aiAvailable = !!(r && r.ai_available !== false);
-      S.aiConfigured = !!(r && r.configured);
-      renderAI();
-    }).catch(function () {
-      if (S.pageId !== pid) { return; }
-      S.proposals = [];
-      S.aiAvailable = false;
-      renderAI();
+  // ---------------------------------------------------------- 规范字对照（离线）
+  function applyRefResult(r) {
+    var res = (r && r.result) || {};
+    var list = res.boxes || [];
+    var by = {};
+    list.forEach(function (b) { by[b.id] = b; });
+    S.refby = by;
+    S.refStats = (r && r.stats) || null;
+    S.boxes.forEach(function (b) {
+      var x = by[b.id];
+      b.refLevel = x ? x.level : '';
+      b.refScore = x ? x.score : null;
     });
+    if (S.page) {
+      view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
+    }
+    renderRef(); renderInspector(); renderPageInfo();
+  }
+
+  function loadRefCheck(pid) {
+    S.refby = {}; S.refStats = null;
+    renderRef();
+    API.get('/api/pages/' + encodeURIComponent(pid) + '/refcheck').then(function (r) {
+      if (S.pageId !== pid) { return; }
+      if (r && r.available) { applyRefResult(r); } else { renderRef(); }
+    }).catch(function () { if (S.pageId === pid) { renderRef(); } });
+  }
+
+  async function refreshRefCheck(pid) {
+    try {
+      var r = await API.get('/api/pages/' + encodeURIComponent(pid) + '/refcheck');
+      if (S.pageId === pid && r && r.available) { applyRefResult(r); }
+    } catch (e) { /* ignore */ }
+  }
+
+  function levelLabel(lv) {
+    return { good: '像规范字', warn: '一般', low: '可疑' }[lv] || '未校验';
+  }
+
+  function renderRef() {
+    var grid = $('#refGrid');
+    if (!grid) { return; }
+    grid.textContent = '';
+    var lv = $('#refLevel');
+    var hint = $('#refHint');
+    var b = selBox();
+    var stat = S.refStats;
+    var info = b ? S.refby[b.id] : null;
+    if (!stat) {
+      lv.textContent = '未校验'; lv.className = 'pill';
+      hint.textContent = '点顶栏「规范字校验」：逐框对照规范彝文字库打分（离线、不花钱）';
+      return;
+    }
+    if (!b) {
+      var sum = $('#refSum');
+      if (sum) { sum.textContent = stat.good + ' 好 / ' + stat.low + ' 可疑 / ' + stat.n; }
+      lv.textContent = '中位 ' + stat.median.toFixed(2) + ' · 低分 ' + stat.low + '/' + stat.n;
+      lv.className = 'pill';
+      hint.textContent = '已校验：绿色=像规范字，红色虚框=可疑（可能两字粘连/残缺）。点选一个框看它的对照字形。';
+      return;
+    }
+    if (!info) {
+      lv.textContent = '无数据'; lv.className = 'pill';
+      hint.textContent = '这个框是校验之后新增/改动的，重新校验一次即可。';
+      return;
+    }
+    lv.textContent = levelLabel(info.level) + ' · ' + info.score.toFixed(2);
+    lv.className = 'pill ref-' + (info.level || 'warn');
+    (info.top || []).forEach(function (t) {
+      var card = el('div', 'refcard');
+      var img = document.createElement('img');
+      img.src = '/api/glyphref/' + t.idx + '.png';
+      img.alt = t.label;
+      card.appendChild(img);
+      card.appendChild(el('span', 'sc', t.score.toFixed(2)));
+      card.appendChild(el('span', 'lb', t.label));
+      grid.appendChild(card);
+    });
+    hint.textContent = info.level === 'low'
+      ? '最像的标准字形也只有 ' + info.score.toFixed(2) + '：这个框很可能不是一个规范彝文字（两字粘连 / 只剩笔画碎片）。'
+      : (info.level === 'good' ? '与标准字形吻合，基本可以确认是一个字。'
+                               : '与标准字形部分吻合，建议对照右侧标准字形再确认一下。');
+  }
+
+  async function startRefCheck(pid) {
+    if (!pid) { return; }
+    var res;
+    try { res = await API.post('/api/pages/' + encodeURIComponent(pid) + '/refcheck', {}); }
+    catch (e) { toast('启动规范字校验失败', 'err', e.message); return; }
+    var rec = await trackJob(res.job_id, { kind: 'refcheck', label: '规范字校验', pageIds: [pid] });
+    if (rec && rec.state === 'done') {
+      await refreshRefCheck(pid);
+      if (S.refStats) { toast('规范字校验完成：低分 ' + S.refStats.low + '/' + S.refStats.n, 'ok'); }
+    }
+  }
+
+  function nextLowBox() {
+    var lows = S.boxes.filter(function (b) { return b.refLevel === 'low'; });
+    if (!lows.length) {
+      toast(S.refStats ? '没有低分框了' : '先点顶栏「规范字校验」', 'warn');
+      return;
+    }
+    var cur = selBox();
+    var i = lows.indexOf(cur);
+    var n = lows[(i + 1) % lows.length];
+    setSel(n.id);
   }
 
   function muted(text) { return el('div', 'muted pad', text); }
-
-  function renderAI() {
-    var list = $('#aiList');
-    list.textContent = '';
-    var cnt = $('#aiCount');
-    if (!S.pageId) { cnt.textContent = ''; list.appendChild(muted('选页后加载')); $('#btnAiAll').disabled = true; return; }
-    var props = S.proposals || [];
-    var pend = props.filter(function (p) { return !p.status || p.status === 'pending'; }).length;
-    cnt.textContent = props.length ? (pend + ' 待处理 / ' + props.length) : '';
-    $('#btnAiAll').disabled = !pend;
-    if (!S.aiAvailable) {
-      list.appendChild(muted('AI 复核不可用（后端 ai_refine 未就绪，或未配置 API Key）'));
-    }
-    if (!props.length) {
-      list.appendChild(muted('暂无 AI 建议：点顶部「AI 复核」生成，或点「刷新」'));
-      return;
-    }
-    props.forEach(function (p, i) {
-      var card = el('div', 'ai-item ' + (p.status || 'pending'));
-      var head = el('div', 'ai-head');
-      var left = el('span', 'ai-title', '#' + (p.box_id != null ? p.box_id : '?') + ' · ' + actionLabel(p.action));
-      head.appendChild(left);
-      if (p.confidence != null) {
-        head.appendChild(el('span', 'ai-conf', Math.round(p.confidence * 100) + '%'));
-      }
-      card.appendChild(head);
-      if (p.reason) { card.appendChild(el('div', 'ai-reason', p.reason)); }
-      var acts = el('div', 'ai-acts');
-      if (!p.status || p.status === 'pending') {
-        var ok = el('button', 'btn tiny ok', '接受');
-        ok.addEventListener('click', function () { applyProposals([propIndex(p, i)], [], false); });
-        var no = el('button', 'btn tiny', '拒绝');
-        no.addEventListener('click', function () { applyProposals([], [propIndex(p, i)], false); });
-        acts.appendChild(ok);
-        acts.appendChild(no);
-      } else {
-        var st = { accepted: '已接受', rejected: '已拒绝', stale: '已失效' }[p.status] || p.status;
-        acts.appendChild(el('span', 'muted', st));
-      }
-      card.appendChild(acts);
-      list.appendChild(card);
-    });
-  }
-
-  async function applyProposals(applyIdx, rejectIdx, applyAll) {
-    if (!S.pageId) { return; }
-    var pid = S.pageId;
-    try {
-      var res = await API.post('/api/pages/' + encodeURIComponent(pid) + '/proposals',
-        { apply: applyIdx || [], reject: rejectIdx || [], apply_all: !!applyAll });
-    } catch (e) {
-      toast('应用 AI 建议失败', 'err', e.message);
-      return;
-    }
-    if (S.pageId !== pid) { return; }
-    adoptBoxes(res.boxes);
-    if (res.proposals) { S.proposals = res.proposals; }
-    S.dirty = false;
-    setSaveState('saved');
-    renderAI(); renderInspector(); renderHint(); renderPageInfo(); renderPages();
-    toast('已应用 AI 建议', 'ok');
-    if (res.warnings && res.warnings.length) { toast('提示', 'warn', res.warnings.join('\n')); }
-  }
 
   function adoptBoxes(list) {
     S.boxes = (list || []).map(normBox);
@@ -782,7 +806,7 @@
       ['尺寸', S.page.w + ' × ' + S.page.h + ' px'],
       ['框数', String(S.boxes.length)],
       ['已复核', S.boxes.filter(function (b) { return !!b.review; }).length + ' / ' + S.boxes.length],
-      ['AI 复核', p.ai_refined ? '已跑过' : (S.aiAvailable ? '可用' : '不可用')]
+      ['规范字', S.refStats ? ('中位 ' + S.refStats.median.toFixed(2) + ' · 低分 ' + S.refStats.low + '/' + S.refStats.n) : '未校验']
     ];
     rows.forEach(function (r) {
       var line = el('div', 'kv');
@@ -794,7 +818,7 @@
 
   // ------------------------------------------------------------------ 任务
   function kindLabel(k) {
-    return { process: '一键处理', export: '一键切图', 'ai-refine': 'AI 复核' }[k] || (k || '任务');
+    return { process: '一键处理', export: '一键切图', refcheck: '规范字校验' }[k] || (k || '任务');
   }
 
   function renderJobbar() {
@@ -879,7 +903,7 @@
     if (rec.state === 'done') {
       if (rec.kind === 'process') { toast('处理完成', 'ok'); refreshAfterJob(rec.pageIds, true); }
       else if (rec.kind === 'export') { toast('导出完成', 'ok'); }
-      else if (rec.kind === 'ai-refine') { toast('AI 复核完成', 'ok'); refreshAfterJob(rec.pageIds, false); }
+      else if (rec.kind === 'refcheck') { toast('规范字校验完成', 'ok'); refreshAfterJob(rec.pageIds, false); }
     } else if (rec.state === 'canceled') {
       toast('任务已取消', 'warn');
     } else {
@@ -934,21 +958,10 @@
     await trackJob(res.job_id, { kind: 'process', label: '一键处理', pageIds: ids === 'all' ? null : ids });
   }
 
-  async function startAIRefine(pids, scope, mode) {
-    for (var i = 0; i < pids.length; i++) {
-      var pid = pids[i];
-      var idsArg = scope === 'all' ? 'all' : 'suspect';
-      if (scope === 'selected') {
-        if (pid !== S.pageId || S.selId == null) { toast('「仅选中框」需先在当前页选中一个框', 'warn'); return; }
-        idsArg = [S.selId];
-      }
-      var res;
-      try { res = await API.post('/api/pages/' + encodeURIComponent(pid) + '/ai-refine', { ids: idsArg, mode: mode }); }
-      catch (e) { toast('启动 AI 复核失败', 'err', e.message); return; }
-      if (!res || !res.job_id) { toast('后端没有返回任务号', 'err'); return; }
-      var rec = await trackJob(res.job_id, { kind: 'ai-refine', label: 'AI 复核', pageIds: [pid] });
-      if (rec.state !== 'done') { return; }
-    }
+  async function startRefCheckFor(pids) {
+    var list = (pids && pids.length) ? pids : (S.pageId ? [S.pageId] : []);
+    if (!list.length) { toast('还没有页面', 'warn'); return; }
+    for (var i = 0; i < list.length; i++) { await startRefCheck(list[i]); }
   }
 
   async function startExport(pids, opts) {
@@ -1062,67 +1075,25 @@
     $('#drawerMask').classList.remove('show');
   }
   function fillSettings() {
-    var ai = (S.settings && S.settings.ai) || {};
     var def = (S.settings && S.settings.defaults) || {};
-    var key = $('#setKey');
-    key.value = '';
-    key.placeholder = ai.configured ? ('已设置：' + (ai.api_key || '') + '（留空不修改）') : '未设置 API Key';
-    $('#setBase').value = ai.base_url || 'https://api.deepseek.com';
-    $('#setModel').value = ai.model || 'deepseek-flash';
-    $('#setWorkers').value = ai.max_workers != null ? ai.max_workers : 4;
     $('#setPad').value = def.pad_ratio != null ? def.pad_ratio : 0.1;
     $('#setMinPad').value = def.min_pad != null ? def.min_pad : 6;
     $('#setOrder').value = def.order || 'visual';
     $('#setFmt').value = def.fmt || 'png';
     $('#setProjectPath').value = (S.project && S.project.path) || '';
-    $('#aiStatus').textContent = ai.configured ? 'AI 已配置' : 'AI 未配置';
-    $('#aiStatus').className = 'chip ' + (ai.configured ? 'ok' : 'warn');
-    $('#aiTestMsg').textContent = '';
-    $('#aiTestMsg').className = 'testmsg';
   }
   async function saveSettings() {
-    var ai = {
-      base_url: $('#setBase').value.trim(),
-      model: $('#setModel').value.trim(),
-      max_workers: Math.round(num($('#setWorkers').value, 4))
-    };
-    var key = $('#setKey').value.trim();
-    if (key) { ai.api_key = key; }
     var defaults = {
       pad_ratio: num($('#setPad').value, 0.1),
       min_pad: Math.round(num($('#setMinPad').value, 6)),
       order: $('#setOrder').value,
       fmt: $('#setFmt').value
     };
-    try { await API.post('/api/settings', { ai: ai, defaults: defaults }); }
+    try { await API.post('/api/settings', { defaults: defaults }); }
     catch (e) { toast('保存设置失败', 'err', e.message); return; }
     toast('设置已保存', 'ok');
     try { var st = await API.get('/api/state'); applyState(st); } catch (e2) { /* ignore */ }
     fillSettings();
-  }
-  async function testAI() {
-    var btn = $('#btnTestAI');
-    var old = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = '测试中…';
-    var body = {
-      ai: {
-        api_key: $('#setKey').value.trim(),
-        base_url: $('#setBase').value.trim(),
-        model: $('#setModel').value.trim()
-      }
-    };
-    try {
-      var r = await API.post('/api/ai/test', body);
-      var ok = r && r.ok;
-      $('#aiTestMsg').textContent = (r && r.message) || (ok ? '连接成功' : '连接失败');
-      $('#aiTestMsg').className = 'testmsg ' + (ok ? 'ok' : 'err');
-    } catch (e) {
-      $('#aiTestMsg').textContent = '测试失败：' + e.message;
-      $('#aiTestMsg').className = 'testmsg err';
-    }
-    btn.disabled = false;
-    btn.textContent = old;
   }
   async function openProject() {
     var p = $('#setProjectPath').value.trim();
@@ -1168,20 +1139,9 @@
     startExport(ids, opts);
   }
 
-  function openAI() {
-    if (!S.pages.length) { toast('还没有页面', 'warn'); return; }
-    $('#aiScope').value = 'suspect';
-    $('#aiMode').value = 'auto';
-    $('#aiPages').value = 'current';
-    showModal('#dlgAI');
-  }
-  function doAIRefine() {
-    var pids = targetPages($('#aiPages').value);
-    if (!pids.length) { toast('没有要复核的页', 'warn'); return; }
-    var scope = $('#aiScope').value;
-    var mode = $('#aiMode').value;
-    hideModal('#dlgAI');
-    startAIRefine(pids, scope, mode);
+  function openRefCheck() {
+    if (!S.pageId) { toast('先选择一页', 'warn'); return; }
+    startRefCheck(S.pageId);
   }
 
   // ------------------------------------------------------------------ 键盘
@@ -1242,7 +1202,7 @@
       var text = ids.length ? ('处理勾选的 ' + n + ' 页？') : ('处理全部 ' + n + ' 页？整页分割约 7–13 秒/页。');
       confirmDialog('一键处理', text, function () { startProcess(ids.length ? ids : 'all'); });
     });
-    $('#btnAI').addEventListener('click', openAI);
+    $('#btnRefCheck').addEventListener('click', openRefCheck);
     $('#btnExport').addEventListener('click', openExport);
     $('#btnSettings').addEventListener('click', openDrawer);
     $('#jobCancel').addEventListener('click', cancelJob);
@@ -1271,26 +1231,21 @@
     $('#inNote').addEventListener('change', commitNote);
     $('#inNote').addEventListener('keydown', function (e) { if (e.key === 'Enter') { $('#inNote').blur(); } });
 
-    $('#btnAiAll').addEventListener('click', function () { applyProposals([], [], true); });
-    $('#btnAiRefresh').addEventListener('click', function () {
-      if (!S.pageId) { return; }
-      loadProposals(S.pageId);
-      toast('已刷新 AI 建议', 'ok');
-    });
     $('#btnProcessOne').addEventListener('click', function () {
       if (!S.pageId) { return; }
       confirmDialog('处理本页', '对当前页跑分割？', function () { startProcess([S.pageId]); });
     });
-    $('#btnAiOne').addEventListener('click', openAI);
+    $('#btnRefOne').addEventListener('click', openRefCheck);
+    $('#btnRefCheckOne').addEventListener('click', openRefCheck);
     $('#btnExportOne').addEventListener('click', openExport);
     $('#btnReload').addEventListener('click', reloadCurrentPage);
     $('#btnFit').addEventListener('click', function () { view.resetView(); });
     $('#btnKeys').addEventListener('click', function () { showModal('#dlgKeys'); });
+    $('#btnNextLow').addEventListener('click', nextLowBox);
 
     $('#drawerMask').addEventListener('click', closeDrawer);
     $('#btnCloseDrawer').addEventListener('click', closeDrawer);
     $('#btnSaveSettings').addEventListener('click', saveSettings);
-    $('#btnTestAI').addEventListener('click', testAI);
     $('#btnOpenProject').addEventListener('click', openProject);
 
     $('#modalMask').addEventListener('click', hideAllModals);
@@ -1298,9 +1253,6 @@
     $('#btnExportCancel2').addEventListener('click', function () { hideModal('#dlgExport'); });
     $('#btnExportGo').addEventListener('click', doExport);
     $('#btnChooseOut').addEventListener('click', chooseExportDir);
-    $('#btnAiCancel').addEventListener('click', function () { hideModal('#dlgAI'); });
-    $('#btnAiCancel2').addEventListener('click', function () { hideModal('#dlgAI'); });
-    $('#btnAiGo').addEventListener('click', doAIRefine);
     $('#btnKeysClose').addEventListener('click', function () { hideModal('#dlgKeys'); });
     $('#btnKeysClose2').addEventListener('click', function () { hideModal('#dlgKeys'); });
     $('#btnConfirmOk').addEventListener('click', function () {

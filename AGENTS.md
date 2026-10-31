@@ -29,6 +29,21 @@
 - 已清理：scratch/、build/、__pycache__、out/_qc_test|_exporter_test|_qc_real*|page1_tif|alt、out/page1/qc（可 python -m yi_core.qc 重生成）。
 - GitHub: https://github.com/Faded-Yang/yi-glyph-splitter
 
+## 已验证事实（AI 复核，2026-10-31）
+- DeepSeek 的 deepseek-flash **默认开启思考模式**，思维链走 reasoning_content 且**计入 max_tokens**。
+  旧代码 max_tokens=200 → 实测 finish=length / reasoning 376 字 / content 空 → 前端 520 条「错误:模型返回空内容」。
+- 修法：请求带 extra_body={"thinking":{"type":"disabled"}} + max_tokens=512；实测同一请求 30 tokens、0.6–0.9 s/框。
+  OpenAI SDK 传 thinking 必须走 extra_body（顶层参数会被忽略）。
+- 真 key 实测：test_connection 带图 0.9 s；4 框 3.0 s；打包 exe 内同样通过。AI 建议多为 tighten，偶有 split。
+- /api/ai/test 必须发**带图**请求，只发文本测不出视觉/思考模式问题（已改）。
+
+## 硬约束（含原因，2026-10-31 晚）
+- **AI 复核（DeepSeek 视觉）整条功能已删除**（用户：「有些鸡肋」）：入口/面板/设置/弹层/后端路由都去掉；
+  不要再加回来，替代品是离线的「规范字校验」。
+- **删除框后不允许移动画布视角**（用户明确要求）：setSel(id, {focus:false}) 用于 deleteSel；连续删框画面不跳。
+- 大文件批量改（index.html/app.js，含 CRLF 与重复片段）**不要用多锚点 multi_edit**：一个 old_string 不匹配整批回滚，
+  已连续失败 3 次。改用 python 脚本：读入 replace('\r\n','\n') → 标记/索引切割 → 写回 newline='\n'，并打印每个锚点的命中数。
+
 ## 硬约束（含原因）
 - 样式：原纸色**矩形裁切**（不二值化）、紧框 + 约 10% 留白、编号 001.png 起。样式图 docs\style\。
 - Windows python 默认编码 cp936：**任何 json/open 必须显式 encoding='utf-8'**，否则读回就 UnicodeDecodeError（踩过 json.dump 无 encoding）。
@@ -55,3 +70,11 @@
 - segment_alt 已完成：`out/alt/page_alt_full_{0.25,1.0}.json`（原图坐标）、`scratch/page_alt_0.25.json`（1/4 坐标，IoU 用）、
   `out/alt/overlay_alt_{full,native}.png`、说明 `out/alt/README-alt.md`。CLI 0.8 s(1/4) / 8.7 s(原生)。
 - App 后端（task-5）就绪：`app/{store,jobs,pipeline,server,selftest_api}.py`；真 TIF e2e 84 PASS/0 FAIL（process 9.4 s→520 框，export 6.2 s→520 tiles），细节 `docs/APP-BACKEND.md`。自测必须先设 `YI_SEGMENT_HOME`=临时目录，勿碰真实 config。
+
+## 当前状态（2026-10-31 晚 · 规范字校验版）
+- 规范字库：data/glyphbank/bank.npz（1428 类 / 5716 张，5.85MB；git 里放 bank.npz.b64 文本版，yi_ref 两种都能读）。
+  抽取脚本 scripts/build_glyphbank.py --pdf <手册.pdf>；来源 PDF 129 页 4x4 目录式。
+- 评分：16x16 粗筛 top60 -> 48x48 余弦；实测本页 520 框 1.0s，中位 0.49，低分(0.38) 57 个 —— 低分框目视=两字粘连/碎片/霉斑。
+- exe：dist/YiGlyphSplit.exe 119MB（含字库），14:29 构建；真机验证 window / health.glyphbank=true / refcheck 完成 / glyphref PNG。
+- AI 复核已删（app/ai_refine.py、ai_selftest.py、_ui_mock.py 均删除；server 的 proposals/ai-refine/ai-test 路由与 settings.ai 一并删除）。
+- 删框不再跳视角：setSel(id, {focus:false})。

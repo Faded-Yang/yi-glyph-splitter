@@ -353,6 +353,9 @@ class ProjectStore:
     def boxes_path(self, pid) -> Path:
         return self.page_dir(pid) / "boxes.json"
 
+    def refcheck_path(self, pid) -> Path:
+        return self.page_dir(pid) / "refcheck.json"
+
     def proposals_path(self, pid) -> Path:
         return self.page_dir(pid) / "proposals.json"
 
@@ -574,6 +577,15 @@ class ProjectStore:
         return p
 
     # -------------------------------------------------------------- proposals
+    def refcheck(self, pid) -> dict:
+        data = read_json(self.refcheck_path(pid), None)
+        return data if isinstance(data, dict) else {}
+
+    def save_refcheck(self, pid, result: dict) -> dict:
+        self.page_dir(pid).mkdir(parents=True, exist_ok=True)
+        atomic_write_json(self.refcheck_path(pid), result)
+        return result
+
     def proposals(self, pid) -> dict:
         data = read_json(self.proposals_path(pid), None)
         if not isinstance(data, dict):

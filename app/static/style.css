@@ -319,3 +319,13 @@ kbd { font-family: Consolas, ui-monospace, monospace; font-size: 11px; padding: 
   .main { grid-template-columns: 240px minmax(0, 1fr) 326px; }
   .brand-text .proj { max-width: 160px; }
 }
+/* ---- 规范字对照（离线字库打分） ---- */
+.refgrid { display: flex; gap: 8px; flex-wrap: wrap; min-height: 6px; margin: 6px 0; }
+.refgrid .refcard { width: 72px; text-align: center; }
+.refgrid .refcard img { width: 72px; height: 72px; object-fit: contain; background: #fff; border-radius: 8px; border: 1px solid rgba(148,163,184,.28); }
+.refgrid .refcard .sc { display: block; font-size: 11px; color: #e2e8f0; margin-top: 2px; }
+.refgrid .refcard .lb { display: block; font-size: 10px; color: #94a3b8; }
+.pill.ref-good { background: rgba(34,197,94,.18); color: #86efac; }
+.pill.ref-warn { background: rgba(245,158,11,.18); color: #fcd34d; }
+.pill.ref-low  { background: rgba(239,68,68,.18);  color: #fca5a5; }
+.lg.lowref { background: #fb7185; }

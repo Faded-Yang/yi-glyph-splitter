@@ -223,6 +223,38 @@ def process_page(store, pid, progress_cb=None, cancel_cb=None, *, force: bool = 
     }
 
 
+# ------------------------------------------------------- standard-glyph check
+def run_refcheck(store, pid, progress_cb=None, cancel_cb=None) -> dict:
+    """Score every box against the standard Yi glyph bank (offline, no API)."""
+    from . import yi_ref
+
+    entry = _require_page(store, pid)
+    src = entry["src"]
+    if not os.path.isfile(src):
+        msg = "源文件不存在：%s" % src
+        _cb(progress_cb, 1.0, msg)
+        raise store_mod.StoreError(msg)
+    if not yi_ref.available():
+        raise store_mod.StoreError("规范字库缺失（data/glyphbank/bank.npz）")
+    boxes = store.boxes(pid)
+    if not boxes:
+        raise store_mod.StoreError("这一页还没有框，先处理或手动框选")
+
+    t0 = time.time()
+    _cb(progress_cb, 0.05, "读取灰度图")
+    check_cancel(cancel_cb)
+    gray = C.load_gray(src)
+    _cb(progress_cb, 0.20, "对照规范字库（%d 个框）" % len(boxes))
+    result = yi_ref.check_boxes(gray, boxes)
+    check_cancel(cancel_cb)
+    result["pid"] = pid
+    result["seconds"] = round(time.time() - t0, 2)
+    result["boxes"] = result.get("boxes") or []
+    store.save_refcheck(pid, result)
+    _cb(progress_cb, 1.0, "完成：%d 框，低分 %d" % (result["stats"]["n"], result["stats"]["low"]))
+    return result
+
+
 # -------------------------------------------------------------------- cropping
 def render_crop(store, pid, x0, y0, x1, y1, scale: float = 2.0, *, max_side: int = 4000) -> bytes:
     """Crop the original page and return PNG bytes (editor detail view)."""

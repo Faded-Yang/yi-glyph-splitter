@@ -487,8 +487,9 @@
       r = this.rectToScreen(b.x0, b.y0, b.x1, b.y1);
       if (r.x + r.w < -4 || r.y + r.h < -4 || r.x > this.cw + 4 || r.y > this.ch + 4) { continue; }
       sel = b.id === d.selId;
-      var ai = b.flags && b.flags.indexOf('ai') >= 0;
-      var col = sel ? '#ef4444' : (ai ? '#a855f7' : (b.review === 1 ? '#22c55e' : (b.review === 2 ? '#f59e0b' : '#22d3ee')));
+      var lowref = b.refLevel === 'low';
+      var col = sel ? '#ef4444' : (b.review === 1 ? '#22c55e' : (b.review === 2 ? '#f59e0b' :
+                (lowref ? '#fb7185' : '#22d3ee')));
       if (sel) {
         ctx.fillStyle = 'rgba(239,68,68,0.10)';
         ctx.fillRect(r.x, r.y, r.w, r.h);
@@ -498,8 +499,10 @@
       }
       ctx.globalAlpha = (sel || b.review !== 0) ? 1 : 0.9;
       ctx.strokeStyle = col;
+      ctx.setLineDash((lowref && !sel) ? [5, 3] : []);
       ctx.lineWidth = sel ? 2 : (this.hoverId === b.id ? 2 : 1.25);
       ctx.strokeRect(rnd(r.x) + 0.5, rnd(r.y) + 0.5, rnd(r.w), rnd(r.h));
+      ctx.setLineDash([]);
       ctx.globalAlpha = 1;
       if (sel) {
         ctx.fillStyle = '#ef4444';

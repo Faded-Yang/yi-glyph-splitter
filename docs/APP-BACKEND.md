@@ -1,3 +1,5 @@
+> **2026-10-31 更新**：AI 复核（DeepSeek 视觉）整条功能已移除，UI/后端路由/设置项都不再存在；替代品是离线的「规范字校验」（app/yi_ref.py + data/glyphbank）。本文档中与 AI 相关的段落仅作历史参考。
+
 # App 后端（task-5 / app-api）实现说明
 
 代码：`app/store.py` `app/jobs.py` `app/pipeline.py` `app/server.py` `app/selftest_api.py`

@@ -86,17 +86,12 @@ code{background:#f2f0ec;padding:2px 6px;border-radius:3px}</style></head>
 
 
 # --------------------------------------------------------------------- helpers
-def _ai_module():
-    """Import app/ai_refine.py lazily (it is being written in parallel)."""
+def _glyphbank_available() -> bool:
     try:
-        from . import ai_refine
-        return ai_refine
+        from . import yi_ref
+        return bool(yi_ref.available())
     except Exception:
-        return None
-
-
-def _ai_available() -> bool:
-    return _ai_module() is not None
+        return False
 
 
 def _resolve_project_dir(cfg, project_dir) -> Path:
@@ -122,9 +117,8 @@ def _state(app: FastAPI) -> dict:
         "project_name": st.name,
         "project_path": str(st.root),
         "pages": st.state_pages(),
-        "settings": {"ai": pub["ai"], "defaults": pub["export"]},
-        "ai_available": _ai_available(),
-    }
+        "settings": {"defaults": pub["export"]},
+           }
 
 
 def _resolve_ids(st: ProjectStore, spec, *, only_with_boxes: bool = False) -> list:
@@ -359,200 +353,27 @@ def _clean_proposal(raw, boxes) -> Optional[dict]:
             "status": "pending"}
 
 
-def _ai_refine_job(app: FastAPI, pid: str, ids_spec, mode: str):
+def _refcheck_job(app: FastAPI, pid: str):
+    """Background job: score all boxes against the standard glyph bank."""
     st: ProjectStore = app.state.store
 
     def fn(job):
-        ai = _ai_module()
-        if ai is None:
-            raise RuntimeError("AI 复核模块未就绪（app/ai_refine.py 缺失或导入失败）")
-        entry = st.get_page(pid)
-        if not entry:
-            raise RuntimeError("页面不存在：%s" % pid)
-        boxes = st.boxes(pid)
-        if not boxes:
-            raise RuntimeError("这一页还没有框，无法复核（请先处理这一页）")
-        if isinstance(ids_spec, str) and ids_spec.strip().lower() == "suspect":
-            target = pipeline.suspect_ids(boxes)
-        elif ids_spec is None or (isinstance(ids_spec, str) and ids_spec.strip().lower() == "all"):
-            target = [int(b["id"]) for b in boxes]
-        elif isinstance(ids_spec, (list, tuple)):
-            valid = {int(b["id"]) for b in boxes}
-            target = []
-            for raw in ids_spec:
-                try:
-                    n = int(raw)
-                except (TypeError, ValueError):
-                    continue
-                if n in valid and n not in target:
-                    target.append(n)
-        else:
-            target = [int(b["id"]) for b in boxes]
-        if not target:
-            raise RuntimeError("没有需要复核的框（可疑框为空，可以先在界面上手动标记存疑）")
-        src = entry.get("src") or ""
-        if not os.path.isfile(src):
-            raise RuntimeError("源文件不存在：%s" % src)
-        cfg = app.state.config.ai_config()
-        job.update(total=len(target), done=0,
-                   message="准备复核 %d 个框" % len(target),
-                   current={"pid": pid, "frac": 0.0, "stage": "读取原图"})
-        rgb = pipeline.C.load_rgb(src)
-        job.check()
-        job.update(current={"pid": pid, "frac": 0.03, "stage": "请求模型"})
-
-        def prog(*args, **kwargs):
-            nums = [a for a in args if isinstance(a, (int, float)) and not isinstance(a, bool)]
-            strings = [a for a in args if isinstance(a, str)]
-            if len(nums) >= 2 and nums[1]:
-                frac = float(nums[0]) / float(nums[1])
-                job.update(done=int(nums[0]), total=int(nums[1]),
-                           current={"pid": pid, "frac": max(0.03, min(0.98, frac)),
-                                    "stage": strings[0] if strings else "复核中"})
-            elif len(nums) == 1:
-                job.update(current={"pid": pid, "frac": max(0.03, min(0.98, float(nums[0]))),
-                                    "stage": strings[0] if strings else "复核中"})
-
+        def progress(frac, message):
+            try:
+                job.progress(int(round(float(frac) * 100)), 100, message)
+            except Exception:
+                pass
         try:
-            result = ai.refine_boxes(rgb, boxes, ids=target, mode=mode or "all", cfg=cfg,
-                                     progress_cb=prog, cancel_cb=job.is_canceled)
-        except TypeError:
-            result = ai.refine_boxes(rgb, boxes, ids=target, cfg=cfg,
-                                     progress_cb=prog, cancel_cb=job.is_canceled)
-        job.check()
-        clean = []
-        for raw in result or []:
-            item = _clean_proposal(raw, boxes)
-            if item:
-                clean.append(item)
-        meta = {"mode": mode or "all", "ids": target, "model": getattr(cfg, "model", ""),
-                "created": time.strftime("%Y-%m-%d %H:%M:%S")}
-        st.save_proposals(pid, clean, meta=meta)
-        st.update_page(pid, ai_refined=True)
-        job.update(done=len(target), current={"pid": pid, "frac": 1.0},
-                   message="复核完成：%d 条建议" % len(clean))
-        job.add_result({"pid": pid, "ok": True, "name": entry.get("name") or "",
-                        "n_proposals": len(clean), "n_targets": len(target), "mode": meta["mode"]})
-        return []
+            res = pipeline.run_refcheck(st, pid, progress_cb=progress, cancel_cb=job.is_canceled)
+        except store_mod.StoreError as exc:
+            raise RuntimeError(str(exc))
+        job.add_result({"pid": pid, "stats": res.get("stats") or {}})
+        return {"pid": pid, "stats": res.get("stats") or {},
+                "proposals": len(res.get("proposals") or [])}
 
     return fn
 
 
-def _apply_proposals(boxes: list, proposals: list, apply_idx, reject_idx, apply_all: bool):
-    """Apply AI proposal indexes to boxes; returns (new boxes, proposals, warnings)."""
-    warnings = []
-    props = [dict(p) for p in (proposals or [])]
-    accepted = set()
-    rejected = set()
-    if apply_all:
-        for i, p in enumerate(props):
-            if p.get("status", "pending") == "pending" and p.get("action") != "keep":
-                accepted.add(i)
-            elif p.get("status", "pending") == "pending":
-                accepted.add(i)
-    for raw in apply_idx or []:
-        try:
-            accepted.add(int(raw))
-        except (TypeError, ValueError):
-            warnings.append("忽略一个非数字的接受索引")
-    for raw in reject_idx or []:
-        try:
-            rejected.add(int(raw))
-        except (TypeError, ValueError):
-            warnings.append("忽略一个非数字的拒绝索引")
-
-    by_id = {}
-    order = []
-    for b in boxes or []:
-        nb = dict(b)
-        nb["id"] = int(nb.get("id") or (len(order) + 1))
-        by_id[nb["id"]] = nb
-        order.append(nb["id"])
-    next_id = (max(order) if order else 0) + 1
-
-    def insert_after(ref_id, newbox):
-        nonlocal next_id
-        nb = dict(newbox)
-        nb["id"] = next_id
-        next_id += 1
-        by_id[nb["id"]] = nb
-        if ref_id in order:
-            order.insert(order.index(ref_id) + 1, nb["id"])
-        else:
-            order.append(nb["id"])
-        return nb
-
-    def remove(box_id):
-        by_id.pop(box_id, None)
-        if box_id in order:
-            order.remove(box_id)
-
-    for i, prop in enumerate(props):
-        if i not in accepted:
-            if i in rejected:
-                prop["status"] = "rejected"
-            continue
-        action = prop.get("action") or "keep"
-        try:
-            box_id = int(prop.get("box_id"))
-        except (TypeError, ValueError):
-            warnings.append("建议缺少 box_id，已跳过")
-            prop["status"] = "rejected"
-            continue
-        if box_id not in by_id:
-            warnings.append("建议引用的框 %s 已不存在，已跳过" % box_id)
-            prop["status"] = "rejected"
-            continue
-        after = [a for a in (prop.get("after") or []) if isinstance(a, dict)]
-        target = by_id[box_id]
-        if action == "keep" or not after:
-            pass
-        elif action == "tighten":
-            box = after[0]
-            target.update({"x0": box["x0"], "y0": box["y0"], "x1": box["x1"], "y1": box["y1"]})
-        elif action == "split" and len(after) >= 2:
-            first = after[0]
-            target.update({"x0": first["x0"], "y0": first["y0"],
-                           "x1": first["x1"], "y1": first["y1"],
-                           "flags": list(dict.fromkeys((target.get("flags") or []) + ["split"]))})
-            for extra in after[1:]:
-                insert_after(box_id, {"x0": extra["x0"], "y0": extra["y0"],
-                                      "x1": extra["x1"], "y1": extra["y1"],
-                                      "flags": ["split"], "review": 0, "note": ""})
-        elif action == "merge":
-            merged = after[0]
-            cx = (merged["x0"] + merged["x1"]) / 2.0
-            cy = (merged["y0"] + merged["y1"]) / 2.0
-            best = None
-            bestd = None
-            for oid in list(order):
-                if oid == box_id:
-                    continue
-                ob = by_id.get(oid)
-                if not ob:
-                    continue
-                ocx = (ob["x0"] + ob["x1"]) / 2.0
-                ocy = (ob["y0"] + ob["y1"]) / 2.0
-                inside = (merged["x0"] - 4 <= ocx <= merged["x1"] + 4 and
-                          merged["y0"] - 4 <= ocy <= merged["y1"] + 4)
-                if not inside:
-                    continue
-                d = (ocx - cx) ** 2 + (ocy - cy) ** 2
-                if bestd is None or d < bestd:
-                    best, bestd = oid, d
-            if best is None:
-                warnings.append("合并建议找不到相邻框，按收紧处理（框 %s）" % box_id)
-            else:
-                remove(best)
-            target.update({"x0": merged["x0"], "y0": merged["y0"],
-                           "x1": merged["x1"], "y1": merged["y1"],
-                           "flags": list(dict.fromkeys((target.get("flags") or []) + ["merged"]))})
-        prop["status"] = "accepted"
-    new_boxes = [by_id[i] for i in order if i in by_id]
-    return new_boxes, props, warnings
-
-
-# ---------------------------------------------------------------------- app
 def create_app(project_dir: str = "") -> FastAPI:
     cfg = config_mod.AppConfig.load()
     root = _resolve_project_dir(cfg, project_dir)
@@ -579,7 +400,7 @@ def create_app(project_dir: str = "") -> FastAPI:
         store = request.app.state.store
         return {"ok": True, "app": APP_TITLE, "version": VERSION,
                 "project": str(store.root), "tools": pipeline.ensure_tools(),
-                "ai_available": _ai_available(),
+                "glyphbank": _glyphbank_available(),
                 "time": time.strftime("%Y-%m-%d %H:%M:%S")}
 
     @app.get("/api/state")
@@ -665,7 +486,6 @@ def create_app(project_dir: str = "") -> FastAPI:
             raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
         page = store.load_page_json(pid)
         boxes = store.boxes(pid)
-        props = store.proposals(pid)
         w, h = store.dims(pid)
         if w <= 0 or h <= 0:                       # stale/partial project data
             try:
@@ -683,7 +503,6 @@ def create_app(project_dir: str = "") -> FastAPI:
             "width": w,
             "height": h,
             "reviewed": bool(entry.get("reviewed")),
-            "ai_refined": bool(entry.get("ai_refined")),
             "n_boxes": len(boxes),
             "page": {"width": w, "height": h,
                      "columns": page.get("columns") or [],
@@ -692,8 +511,8 @@ def create_app(project_dir: str = "") -> FastAPI:
             "boxes": boxes,
             "preview_url": "/api/pages/%s/preview.png?w=%d" % (pid, DEFAULT_PREVIEW_W),
             "has_preview": _preview_ok(store.preview_path(pid)),
-            "n_proposals": len(props.get("proposals") or []),
-            "ai_available": _ai_available(),
+            "refcheck": (store.refcheck(pid).get("stats") or {}),
+            "glyphbank": _glyphbank_available(),
         }
 
     @app.get("/api/pages/{pid}/preview.png")
@@ -857,148 +676,41 @@ def create_app(project_dir: str = "") -> FastAPI:
     def api_export_all(request: Request, body: Any = Body(default_factory=dict)):
         return _start_export(request, "all", body)
 
-    # --------------------------------------------------------------- proposals
-    @app.get("/api/pages/{pid}/proposals")
-    def api_proposals_get(pid: str, request: Request):
+    # ------------------------------------------------- standard glyph reference
+    @app.get("/api/pages/{pid}/refcheck")
+    def api_refcheck_get(pid: str, request: Request):
         store: ProjectStore = request.app.state.store
         if not store.has_page(pid):
             raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
-        data = store.proposals(pid)
-        cfg = request.app.state.config
-        return {"proposals": data.get("proposals") or [],
-                "meta": data.get("meta") or {},
-                "ai_available": _ai_available(),
-                "configured": bool(cfg.ai.get("api_key"))}
+        data = store.refcheck(pid)
+        return {"available": bool(data), "result": data.get("boxes") and data or {},
+                "stats": (data.get("stats") or {}),
+                "proposals": data.get("proposals") or [],
+                "glyphbank": _glyphbank_available()}
 
-    @app.post("/api/pages/{pid}/proposals")
-    def api_proposals_apply(pid: str, request: Request, body: Any = Body(default_factory=dict)):
+    @app.post("/api/pages/{pid}/refcheck")
+    def api_refcheck_run(pid: str, request: Request):
         store: ProjectStore = request.app.state.store
         if not store.has_page(pid):
             raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
-        data = body if isinstance(body, dict) else {}
-        boxes = store.boxes(pid)
-        data_props = store.proposals(pid)
-        props = data_props.get("proposals") or []
-        if not props:
-            raise HTTPException(status_code=400, detail="没有 AI 建议可处理")
-        new_boxes, props2, warns = _apply_proposals(
-            boxes, props, data.get("apply") or [], data.get("reject") or [],
-            bool(data.get("apply_all")))
-        saved, norm_warns = store.save_boxes(pid, new_boxes)
-        avoids = [w for w in warns if w]
-        payload = store.save_proposals(pid, props2, meta=data_props.get("meta") or {})
-        entry = store.get_page(pid)
-        return {"boxes": saved, "proposals": payload.get("proposals") or [],
-                "warnings": avoids + list(norm_warns),
-                "status": entry.get("status"), "n_boxes": len(saved)}
-
-    @app.post("/api/pages/{pid}/ai-refine")
-    def api_ai_refine(pid: str, request: Request, body: Any = Body(default_factory=dict)):
-        store: ProjectStore = request.app.state.store
-        if not store.has_page(pid):
-            raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
-        data = body if isinstance(body, dict) else {}
-        ids_spec = data.get("ids", "all")
-        mode = str(data.get("mode") or "all")
+        if not _glyphbank_available():
+            raise HTTPException(status_code=400, detail="规范字库未安装（data/glyphbank/bank.npz）")
         job_id = request.app.state.jobs.submit(
-            "ai-refine", _ai_refine_job(request.app, pid, ids_spec, mode),
-            total=0, message="排队中：AI 复核",
-            meta={"pid": pid, "ids": ids_spec, "mode": mode})
-        return {"job_id": job_id, "pid": pid, "mode": mode}
+            "refcheck", _refcheck_job(request.app, pid), total=1,
+            message="排队中：规范字校验", meta={"pid": pid})
+        return {"job_id": job_id, "pid": pid}
 
-    # ---------------------------------------------------------------- settings
-    @app.post("/api/settings")
-    def api_settings(request: Request, body: Any = Body(default_factory=dict)):
-        cfg = request.app.state.config
-        data = body if isinstance(body, dict) else {}
-        ai = data.get("ai")
-        defaults = data.get("defaults")
-        if defaults is None:
-            defaults = data.get("export")
-        if isinstance(ai, dict):
-            for key in ("api_key", "base_url", "model", "max_workers", "timeout"):
-                if key not in ai:
-                    continue
-                val = ai.get(key)
-                if key == "api_key":
-                    if val is None:
-                        continue
-                    text = str(val)
-                    if text == "" or "…" in text:
-                        continue
-                    cfg.ai["api_key"] = text.strip()
-                elif key == "max_workers":
-                    try:
-                        cfg.ai["max_workers"] = max(1, min(16, int(val)))
-                    except (TypeError, ValueError):
-                        pass
-                elif key == "timeout":
-                    try:
-                        cfg.ai["timeout"] = max(5.0, min(300.0, float(val)))
-                    except (TypeError, ValueError):
-                        pass
-                elif key == "base_url":
-                    text = str(val).strip()
-                    if text:
-                        cfg.ai["base_url"] = text
-                elif key == "model":
-                    text = str(val).strip()
-                    if text:
-                        cfg.ai["model"] = text
-        if isinstance(defaults, dict):
-            if "pad_ratio" in defaults:
-                try:
-                    cfg.export["pad_ratio"] = max(0.0, min(0.5, float(defaults["pad_ratio"])))
-                except (TypeError, ValueError):
-                    pass
-            if "min_pad" in defaults:
-                try:
-                    cfg.export["min_pad"] = max(0, min(200, int(defaults["min_pad"])))
-                except (TypeError, ValueError):
-                    pass
-            if "order" in defaults and str(defaults["order"]) in pipeline.ORDER_VALUES:
-                cfg.export["order"] = str(defaults["order"])
-            if "fmt" in defaults and str(defaults["fmt"]).lower().lstrip(".") in pipeline.FMT_VALUES:
-                cfg.export["fmt"] = str(defaults["fmt"]).lower().lstrip(".")
+    @app.get("/api/glyphref/{idx}.png")
+    def api_glyphref(idx: int):
         try:
-            cfg.save()
+            from . import yi_ref
+            data = yi_ref.ref_png(idx, scale=4)
+        except IndexError:
+            raise HTTPException(status_code=404, detail="字形索引越界：%s" % idx)
         except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=500, detail="保存设置失败：%s" % exc)
-        pub = cfg.public()
-        return {"ok": True, "settings": {"ai": pub["ai"], "defaults": pub["export"]}}
-
-    @app.post("/api/ai/test")
-    def api_ai_test(request: Request, body: Any = Body(default_factory=dict)):
-        ai_mod = _ai_module()
-        if ai_mod is None:
-            return {"ok": False, "message": "AI 复核模块未就绪（app/ai_refine.py 缺失或导入失败）"}
-        cfg = request.app.state.config
-        data = body if isinstance(body, dict) else {}
-        override = data.get("ai") if isinstance(data.get("ai"), dict) else {}
-        values = dict(cfg.ai)
-        for key in ("api_key", "base_url", "model", "max_workers", "timeout"):
-            if key in override:
-                val = override[key]
-                if key == "api_key" and val is not None and "…" in str(val):
-                    continue
-                if val not in (None, ""):
-                    values[key] = val
-        if not values.get("api_key"):
-            return {"ok": False,
-                    "message": "还没有配置 API Key：请先在设置里填写 DeepSeek API Key"}
-        try:
-            kwargs = {k: values[k] for k in ("api_key", "base_url", "model",
-                                             "max_workers", "timeout") if k in values}
-            try:
-                ai_cfg = ai_mod.AIConfig(**kwargs)
-            except TypeError:
-                ai_cfg = ai_mod.AIConfig(api_key=values.get("api_key", ""))
-            result = ai_mod.test_connection(ai_cfg)
-            if isinstance(result, dict):
-                return {"ok": bool(result.get("ok")), "message": str(result.get("message") or "")}
-            return {"ok": bool(result), "message": "连接成功" if result else "连接失败"}
-        except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "message": "测试连接失败：%s" % exc}
+            raise HTTPException(status_code=500, detail="读取参考字形失败：%s" % exc)
+        return Response(content=data, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
 
     @app.post("/api/project/open")
     def api_project_open(request: Request, body: Any = Body(default_factory=dict)):
@@ -1022,11 +734,40 @@ def create_app(project_dir: str = "") -> FastAPI:
         return {"ok": True, "state": _state(request.app)}
 
     # ------------------------------------------------------------------- misc
+    # (job factories below)
+    @app.post("/api/settings")
+    def api_settings(request: Request, body: Any = Body(default_factory=dict)):
+        cfg = request.app.state.config
+        data = body if isinstance(body, dict) else {}
+        defaults = data.get("defaults")
+        if defaults is None:
+            defaults = data.get("export")
+        if isinstance(defaults, dict):
+            if "pad_ratio" in defaults:
+                try:
+                    cfg.export["pad_ratio"] = max(0.0, min(0.5, float(defaults["pad_ratio"])))
+                except (TypeError, ValueError):
+                    pass
+            if "min_pad" in defaults:
+                try:
+                    cfg.export["min_pad"] = max(0, min(200, int(defaults["min_pad"])))
+                except (TypeError, ValueError):
+                    pass
+            if "order" in defaults and str(defaults["order"]) in pipeline.ORDER_VALUES:
+                cfg.export["order"] = str(defaults["order"])
+            if "fmt" in defaults and str(defaults["fmt"]).lower().lstrip(".") in pipeline.FMT_VALUES:
+                cfg.export["fmt"] = str(defaults["fmt"]).lower().lstrip(".")
+        try:
+            cfg.save()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=500, detail="保存设置失败：%s" % exc)
+        pub = cfg.public()
+        return {"ok": True, "settings": {"defaults": pub["export"]}}
+
     @app.get("/api/settings")
     def api_settings_get(request: Request):
         pub = request.app.state.config.public()
-        return {"settings": {"ai": pub["ai"], "defaults": pub["export"]},
-                "ai_available": _ai_available()}
+        return {"settings": {"defaults": pub["export"]}}
 
     # unknown /api/* -> Chinese JSON 404 (must be registered before the static mount)
     @app.api_route("/api/{rest:path}",
@@ -1106,7 +847,7 @@ def _selftest() -> int:
         body = st.json()
         check(st.status_code == 200 and body["pages"] == [], "empty state")
         check(body["project"]["path"].endswith("proj"), "project path")
-        check("defaults" in body["settings"] and "ai" in body["settings"], "settings in state")
+        check("defaults" in body["settings"], "settings in state")
 
         r = client.post("/api/settings", json={"defaults": {"pad_ratio": 0.2, "order": "reading"}})
         check(r.status_code == 200 and r.json()["settings"]["defaults"]["pad_ratio"] == 0.2,
@@ -1152,14 +893,6 @@ def _selftest() -> int:
         check(r.status_code in (404, 422), "bad crop params tolerated")
         r = client.post("/api/export", json={})
         check(r.status_code == 400 and "导出" in r.json()["detail"], "export nothing -> 400")
-
-        r = client.post("/api/pages/nope/proposals", json={"apply_all": True})
-        check(r.status_code == 404, "proposals apply unknown page 404")
-        r = client.post("/api/pages/nope/ai-refine", json={"ids": "all"})
-        check(r.status_code == 404, "ai-refine unknown page 404")
-
-        r = client.post("/api/ai/test", json={})
-        check(r.status_code == 200 and r.json()["ok"] is False, "ai/test without key -> ok false")
 
         r = client.get("/api/dialog/files")
         check(r.status_code == 200 and r.json()["paths"] == [], "dialog disabled -> empty")

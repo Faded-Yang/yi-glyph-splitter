@@ -145,20 +145,23 @@ def main():
     # restore
     c.put("/api/pages/%s/boxes" % pid, json={"boxes": after})
 
-    print("\n[7] AI refine (mock, no key needed)")
-    r = c.post("/api/pages/%s/ai-refine" % pid, json={"ids": [b["id"] for b in after[:3]], "mode": "all"})
-    check("POST ai-refine 200", r.status_code == 200, r.text[:300])
+    print("\n[7] 规范字校验（离线字库）")
+    r = c.post("/api/pages/%s/refcheck" % pid)
+    check("POST refcheck 200", r.status_code == 200, r.text[:200])
     if r.status_code == 200:
         jid = r.json()["job_id"]
-        j = wait_job(c, jid, label="ai")
-        check("ai job finished", j and j.get("state") in ("done", "error"), j and j.get("state"))
-        r = c.get("/api/pages/%s/proposals" % pid)
-        check("GET proposals 200", r.status_code == 200, r.status_code)
-        props = r.json().get("proposals", [])
-        print("    proposals:", len(props))
-        if props:
-            r = c.post("/api/pages/%s/proposals" % pid, json={"apply": [0]})
-            check("apply proposal 200", r.status_code == 200, r.text[:200])
+        j = wait_job(c, jid, label="refcheck")
+        check("refcheck job finished", j and j.get("state") == "done", j and j.get("state"))
+        rc = c.get("/api/pages/%s/refcheck" % pid)
+        check("GET refcheck 200", rc.status_code == 200, rc.status_code)
+        body = rc.json() or {}
+        stats = body.get("stats") or {}
+        check("refcheck scored every box", stats.get("n") == len(boxes), (stats.get("n"), len(boxes)))
+        check("refcheck median in (0,1)", 0.0 < float(stats.get("median") or 0) < 1.0, stats.get("median"))
+        first = (body.get("result") or {}).get("boxes") or []
+        if first:
+            rr = c.get("/api/glyphref/%d.png" % first[0]["top"][0]["idx"])
+            check("GET glyphref png", rr.status_code == 200 and rr.content[:4] == b"\x89PNG", rr.status_code)
 
     print("\n[8] export tiles")
     r = c.post("/api/pages/%s/export" % pid,

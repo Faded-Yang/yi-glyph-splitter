@@ -12,6 +12,7 @@
   <symbol id="i-folder" viewBox="0 0 16 16"><path d="M1.8 4.3A1.3 1.3 0 0 1 3.1 3h3.1l1.4 1.7h4.3a1.3 1.3 0 0 1 1.3 1.3v6.3a1.3 1.3 0 0 1-1.3 1.3H3.1a1.3 1.3 0 0 1-1.3-1.3V4.3Z"/></symbol>
   <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.1 12.6 8 5 12.9V3.1Z" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-spark" viewBox="0 0 16 16"><path d="M8 1.8 9.5 6.5 14.2 8 9.5 9.5 8 14.2 6.5 9.5 1.8 8 6.5 6.5 8 1.8Z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-book" viewBox="0 0 16 16"><path d="M2.4 3.2h4.1c.8 0 1.5.7 1.5 1.5v8.1c0-.8-.7-1.5-1.5-1.5H2.4V3.2Z"/><path d="M13.6 3.2H9.5c-.8 0-1.5.7-1.5 1.5v8.1c0-.8.7-1.5 1.5-1.5h4.1V3.2Z"/></symbol>
   <symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2v7.4"/><path d="M5 6.6 8 9.6l3-3"/><path d="M2.8 12.2v1.1A1.3 1.3 0 0 0 4.1 14.6h7.8a1.3 1.3 0 0 0 1.3-1.3v-1.1"/></symbol>
   <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.3"/><path d="M8 1.7v1.8M8 12.5v1.8M1.7 8h1.8M12.5 8h1.8M3.6 3.6l1.3 1.3M11.1 11.1l1.3 1.3M12.4 3.6l-1.3 1.3M4.9 11.1l-1.3 1.3"/></symbol>
   <symbol id="i-x" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></symbol>
@@ -31,10 +32,10 @@
       <button class="btn" id="btnImportFolder" title="选择文件夹批量导入"><svg class="ico"><use href="#i-folder"/></svg><span>导入文件夹</span></button>
       <span class="sep"></span>
       <button class="btn primary" id="btnProcess" title="对勾选页（或全部页）跑分割，只画框不切图"><svg class="ico"><use href="#i-play"/></svg><span>一键处理</span></button>
-      <button class="btn" id="btnAI" title="调用 DeepSeek 视觉模型给修正建议"><svg class="ico"><use href="#i-spark"/></svg><span>AI 复核</span></button>
+      <button class="btn" id="btnRefCheck" title="对照《规范彝文单字图形识别手册》字库逐框打分（离线，不花钱）"><svg class="ico"><use href="#i-book"/></svg><span>规范字校验</span></button>
       <button class="btn primary" id="btnExport" title="按当前框导出 tiles + index.csv + sheet.png"><svg class="ico"><use href="#i-download"/></svg><span>一键切图</span></button>
       <span class="sep"></span>
-      <button class="btn" id="btnSettings" title="设置（AI 凭据 / 导出默认值）"><svg class="ico"><use href="#i-gear"/></svg><span>设置</span></button>
+      <button class="btn" id="btnSettings" title="设置（导出默认值 / 项目目录）"><svg class="ico"><use href="#i-gear"/></svg><span>设置</span></button>
     </div>
     <div class="topright">
       <span class="zoom" id="zoomLabel">100%</span>
@@ -81,7 +82,7 @@
             <i class="lg normal"></i>普通
             <i class="lg ok"></i>已确认
             <i class="lg warn"></i>存疑
-            <i class="lg ai"></i>AI
+            <i class="lg lowref"></i>低分
             <i class="lg sel"></i>选中
           </span>
           <span class="spacer"></span>
@@ -131,12 +132,14 @@
       </div>
 
       <div class="section">
-        <h3><span>AI 建议</span><span class="muted" id="aiCount"></span></h3>
-        <div class="ai-headrow">
-          <button class="btn tiny" id="btnAiAll">全部接受</button>
-          <button class="btn tiny" id="btnAiRefresh">刷新</button>
+        <h3><span>规范字对照</span><span class="muted" id="refSum"></span></h3>
+        <div class="refgrid" id="refGrid"></div>
+        <div class="dim" id="refHint">点顶栏「规范字校验」：逐个框对照规范彝文字库打分（离线、不花钱）</div>
+        <div class="ai-headrow" style="margin-top:8px">
+          <span class="pill" id="refLevel">未校验</span>
+          <button class="btn tiny" id="btnNextLow" title="跳到下一个低分框">下一个低分</button>
+          <button class="btn tiny" id="btnRefOne">校验本页</button>
         </div>
-        <div class="ai-list" id="aiList"></div>
       </div>
 
       <div class="section">
@@ -144,7 +147,7 @@
         <div id="pageInfo" class="pageinfo"></div>
         <div class="acts two">
           <button class="btn" id="btnProcessOne">处理本页</button>
-          <button class="btn" id="btnAiOne">AI 复核本页</button>
+          <button class="btn" id="btnRefCheckOne">规范字校验本页</button>
           <button class="btn" id="btnExportOne">切图本页</button>
           <button class="btn" id="btnReload">重新载入</button>
         </div>
@@ -163,18 +166,6 @@
     <button class="icon-btn" id="btnCloseDrawer" title="关闭（Esc）"><svg class="ico"><use href="#i-x"/></svg></button>
   </div>
   <div class="drawer-body">
-    <div class="group-title">AI 复核（DeepSeek）<span class="chip warn" id="aiStatus">AI 未配置</span></div>
-    <label class="field">API Key<input id="setKey" type="password" autocomplete="off" placeholder="未设置 API Key"></label>
-    <label class="field">Base URL<input id="setBase" type="text" placeholder="https://api.deepseek.com"></label>
-    <div class="field-row">
-      <label class="field">模型<input id="setModel" type="text" placeholder="deepseek-flash"></label>
-      <label class="field narrow">并发<input id="setWorkers" type="number" min="1" max="16" step="1"></label>
-    </div>
-    <div class="row-btns">
-      <button class="btn" id="btnTestAI">测试连接</button>
-      <span class="testmsg" id="aiTestMsg"></span>
-    </div>
-
     <div class="group-title">导出默认值</div>
     <div class="field-row">
       <label class="field">留白比例<input id="setPad" type="number" min="0" max="0.5" step="0.01"></label>
@@ -217,16 +208,6 @@
   <div class="dlg-foot"><button class="btn" id="btnExportCancel2">取消</button><button class="btn primary" id="btnExportGo">开始导出</button></div>
 </div>
 
-<div class="dlg" id="dlgAI" role="dialog" aria-label="AI 复核">
-  <div class="dlg-head"><b>AI 复核</b><button class="icon-btn" id="btnAiCancel" title="取消"><svg class="ico"><use href="#i-x"/></svg></button></div>
-  <div class="dlg-body">
-    <p class="hint">AI 只生成「建议」，不改框；生成后在右栏逐条接受或拒绝。</p>
-    <label class="field">框范围<select id="aiScope"><option value="suspect">可疑框（存疑 / 未复核）</option><option value="all">全部框</option><option value="selected">仅当前选中的框</option></select></label>
-    <label class="field">修正模式<select id="aiMode"><option value="auto">auto（让模型判断）</option><option value="tighten">tighten（只收紧）</option><option value="split">split（只拆分）</option></select></label>
-    <label class="field">页面范围<select id="aiPages"><option value="current">当前页</option><option value="checked">勾选的页</option><option value="all">全部页</option></select></label>
-  </div>
-  <div class="dlg-foot"><button class="btn" id="btnAiCancel2">取消</button><button class="btn primary" id="btnAiGo">开始复核</button></div>
-</div>
 
 <div class="dlg" id="dlgConfirm" role="dialog" aria-label="确认">
   <div class="dlg-head"><b id="confirmTitle">确认</b><button class="icon-btn" id="btnConfirmCancel" title="取消"><svg class="ico"><use href="#i-x"/></svg></button></div>
