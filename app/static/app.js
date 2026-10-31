@@ -257,7 +257,11 @@
       flags: Array.isArray(b.flags) ? b.flags.slice() : [],
       review: b.review ? (b.review | 0) : 0,
       note: b.note || '',
-      color: b.color || ''
+      color: b.color || '',
+      // 规范字校验结果只存在前端：撤销/重做也要带上，否则一撤回就全变回青色
+      refLevel: b.refLevel || '',
+      refScore: b.refScore != null ? b.refScore : null,
+      refTop: b.refTop || []
     };
   }
 
@@ -382,6 +386,7 @@
     S.boxes = JSON.parse(snap.boxes).map(normBox);
     S.selId = snap.selId;
     if (S.selId != null && !S.boxes.some(function (b) { return b.id === S.selId; })) { S.selId = null; }
+    rebuildRefby();          // 撤销/重做后把规范字颜色接回来
     view.setData({ w: S.page.w, h: S.page.h, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
     setSaveState('dirty');
     renderInspector(); renderHint(); renderRef();
