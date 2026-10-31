@@ -25,7 +25,7 @@
     hist: [], redo: [], lastSnap: '',
     dirty: false, saveState: 'idle', saveTimer: null, saving: false,
     jobs: {}, jobOrder: [], jobProgress: {}, pollTimer: null, activeJobId: null,
-    refby: {}, refStats: null, glyphbank: true, refJobPid: null,
+    refby: {}, refStats: null, glyphbank: true, refJobPid: null, showCols: true,
     previewW: 1600, previewToken: 1, previewRebuildTried: -1, detailTimer: null, detailRect: null,
     checked: {}, filter: '', armed: false, modalOpen: null,
     tempId: 1, lastExportOut: ''
@@ -1300,6 +1300,37 @@
   }
 
   // ------------------------------------------------------------------ 绑定
+  function initColumnsUi() {
+    try {
+      var v = localStorage.getItem('yi.ui.showCols');
+      if (v !== null) { S.showCols = (v === '1'); }
+    } catch (e) { /* ignore */ }
+    if (view && view.setShowColumns) { view.setShowColumns(S.showCols); }
+    var b = document.getElementById('btnCols');
+    if (b) {
+      b.classList.toggle('active', S.showCols);
+      b.addEventListener('click', function () {
+        S.showCols = !S.showCols;
+        if (view && view.setShowColumns) { view.setShowColumns(S.showCols); }
+        b.classList.toggle('active', S.showCols);
+        try { localStorage.setItem('yi.ui.showCols', S.showCols ? '1' : '0'); } catch (e) { /* ignore */ }
+      });
+    }
+    var r = document.getElementById('btnColsReset');
+    if (r) {
+      r.addEventListener('click', function () {
+        var pid = S.pageId;
+        if (!pid) { toast('先选一页', 'warn'); return; }
+        API.put('/api/pages/' + encodeURIComponent(pid) + '/columns', { reset: true }).then(function (res) {
+          S.page = S.page || {};
+          S.page.columns = (res && res.columns) || [];
+          view.setData({ w: S.page.w || S.page.width, h: S.page.h || S.page.height, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
+          toast('已按墨迹重新分列', 'ok');
+        }).catch(function (e) { toast('重置失败', 'err', e.message); });
+      });
+    }
+  }
+
   function bindAll() {
     $('#btnImportFiles').addEventListener('click', importFiles);
     $('#btnImportFolder').addEventListener('click', importFolder);
@@ -1477,6 +1508,17 @@
         renderHint();
         if (S.previewW < 3200 && S.page && S.page.w) { /* noop */ }
       },
+      onColumnsChange: function (cols) {
+        var pid = S.pageId;
+        if (!pid) { return; }
+        API.put('/api/pages/' + encodeURIComponent(pid) + '/columns', { columns: cols }).then(function (r) {
+          if (S.pageId !== pid) { return; }
+          S.page = S.page || {};
+          S.page.columns = (r && r.columns) || cols;
+          view.setData({ w: S.page.w || S.page.width, h: S.page.h || S.page.height, boxes: S.boxes, selId: S.selId, columns: S.page.columns });
+          toast('分列已更新（编号与导出顺序按新分列）', 'ok');
+        }).catch(function (e) { toast('保存分列失败', 'err', e.message); });
+      },
       onEditEnd: function () {
         var eb = selBox();
         if (eb) { rescoreBox(eb.id); }   // 改完框自动重算这一框
@@ -1510,6 +1552,7 @@
     window.YI_VIEW = view;   // 调试 / 自动化测试用句柄
     bindAll();
     initPanels();
+    initColumnsUi();
     setSaveState('idle');
     setStageHint('正在连接后端…');
     loadState();

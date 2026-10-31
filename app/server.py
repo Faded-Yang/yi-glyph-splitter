@@ -374,6 +374,25 @@ def _refcheck_job(app: FastAPI, pid: str):
     return fn
 
 
+def _page_columns(store, pid) -> list:
+    """Columns for the UI: auto-split merged bands once, unless the user edited them."""
+    try:
+        page = store.load_page_json(pid)
+    except Exception:  # noqa: BLE001
+        return []
+    try:
+        cols = pipeline.ensure_columns(store, pid, page)
+    except Exception:  # noqa: BLE001
+        cols = page.get("columns") or []
+    out = []
+    for i, c in enumerate(cols or []):
+        try:
+            out.append({"idx": int(c.get("idx", i)), "x0": int(c["x0"]), "x1": int(c["x1"])})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
 def create_app(project_dir: str = "") -> FastAPI:
     cfg = config_mod.AppConfig.load()
     root = _resolve_project_dir(cfg, project_dir)
@@ -393,6 +412,7 @@ def create_app(project_dir: str = "") -> FastAPI:
     app.state.store = st
     app.state.jobs = jobs_mod.JobManager()
     app.state.config = cfg
+
 
     # ------------------------------------------------------------- health/state
     @app.get("/api/health")
@@ -505,7 +525,7 @@ def create_app(project_dir: str = "") -> FastAPI:
             "reviewed": bool(entry.get("reviewed")),
             "n_boxes": len(boxes),
             "page": {"width": w, "height": h,
-                     "columns": page.get("columns") or [],
+                     "columns": _page_columns(store, pid),
                      "source": page.get("source") or entry.get("src") or "",
                      "w": w, "h": h},
             "boxes": boxes,
@@ -699,6 +719,47 @@ def create_app(project_dir: str = "") -> FastAPI:
             "refcheck", _refcheck_job(request.app, pid), total=1,
             message="排队中：规范字校验", meta={"pid": pid})
         return {"job_id": job_id, "pid": pid}
+
+    @app.put("/api/pages/{pid}/columns")
+    def api_put_columns(pid: str, request: Request, body: Any = Body(default_factory=dict)):
+        """User-adjusted column boundaries (drag the guide lines on the canvas)."""
+        store: ProjectStore = request.app.state.store
+        if not store.has_page(pid):
+            raise HTTPException(status_code=404, detail="页面不存在：%s" % pid)
+        data = body if isinstance(body, dict) else {}
+        page = store.load_page_json(pid)
+        if data.get("reset"):
+            page = dict(page)
+            page.pop("columns_refined", None)
+            page["columns_manual"] = False
+            store.save_page_json(pid, page)
+            cols = pipeline.ensure_columns(store, pid, page)
+            return {"columns": [{"idx": int(c.get("idx", i)), "x0": int(c["x0"]), "x1": int(c["x1"])}
+                                   for i, c in enumerate(cols or [])]}
+        raw = data.get("columns")
+        if not isinstance(raw, list) or not raw:
+            raise HTTPException(status_code=400, detail="缺少 columns")
+        W, H = store.dims(pid)
+        clean = []
+        for c in raw[:64]:
+            try:
+                x0, x1 = int(round(float(c["x0"]))), int(round(float(c["x1"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+            x0, x1 = max(0, min(W, x0)), max(0, min(W, x1))
+            if x1 - x0 < 30:
+                raise HTTPException(status_code=400, detail="列宽太窄（<30px）")
+            clean.append((x0, x1))
+        clean.sort(key=lambda t: t[0])
+        for a, b in zip(clean, clean[1:]):
+            if b[0] < a[1] - 1:
+                raise HTTPException(status_code=400, detail="列区间重叠")
+        cols = [{"idx": i, "x0": a, "x1": b, "w": b - a} for i, (a, b) in enumerate(clean)]
+        page = dict(page)
+        page["columns"] = cols
+        page["columns_manual"] = True
+        store.save_page_json(pid, page)
+        return {"columns": [{"idx": c["idx"], "x0": c["x0"], "x1": c["x1"]} for c in cols]}
 
     @app.post("/api/pages/{pid}/score-box")
     def api_score_box(pid: str, request: Request, body: Any = Body(default_factory=dict)):

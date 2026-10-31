@@ -25,6 +25,7 @@
     this.mode = 'idle'; this.drag = null; this.create = null;
     this.space = false; this.armed = false;
     this.hoverId = null; this.mouse = null;
+    this.showCols = true; this.hoverCol = -1;
     this.raf = 0;
     this._bind();
     this._resize();
@@ -264,6 +265,18 @@
 
   View.prototype._cursor = function (name) {
     if (name) { this.canvas.style.cursor = name; return; }
+    if (this.mode === 'col') {
+      var idx = this.drag.idx;
+      var cols = this.data.columns;
+      if (idx > 0 && idx < cols.length) {
+        var left = cols[idx - 1], right = cols[idx];
+        var nx = clamp(ip.x, left.x0 + 40, right.x1 - 40);
+        left.x1 = rnd(nx);
+        right.x0 = rnd(nx);
+        this.invalidate();
+      }
+      return;
+    }
     if (this.mode === 'pan') { this.canvas.style.cursor = 'grabbing'; return; }
     if (this.space) { this.canvas.style.cursor = 'grab'; return; }
     if (this.armed) { this.canvas.style.cursor = 'crosshair'; return; }
@@ -271,6 +284,9 @@
   };
 
   View.prototype._hoverCursor = function (hit, p) {
+    var ci = this._colBoundaryAt(p.x);
+    this.hoverCol = ci;
+    if (ci >= 0) { this._cursor('col-resize'); this.invalidate(); return; }
     if (this.space) { this._cursor('grab'); return; }
     if (hit && hit.type === 'handle') { this._cursor(CURSORS[hit.handle] || 'default'); return; }
     if (hit && hit.type === 'box') { this._cursor('move'); return; }
@@ -327,6 +343,13 @@
     var p = this.screenPos(ev);
     var ip = this.imgFromScreen(p.x, p.y);
     this.mouse = { sx: p.x, sy: p.y, x: ip.x, y: ip.y };
+    var ci = this._colBoundaryAt(p.x);
+    if (ci >= 0 && !this.space) {
+      this.mode = 'col';
+      this.drag = { idx: ci };
+      this.invalidate();
+      return;
+    }
     if (ev.button === 1 || this.space) {
       this.mode = 'pan';
       this.drag = { sx: p.x, sy: p.y, tx: this.tx, ty: this.ty };
@@ -387,6 +410,16 @@
       this._hoverCursor(hit, p);
       return;
     }
+    if (this.mode === 'col') {
+      var idx = this.drag.idx, cols = this.data.columns;
+      if (idx > 0 && idx < cols.length) {
+        var left = cols[idx - 1], right = cols[idx];
+        var nx = clamp(ip.x, left.x0 + 40, right.x1 - 40);
+        left.x1 = rnd(nx); right.x0 = rnd(nx);
+        this.invalidate();
+      }
+      return;
+    }
     if (this.mode === 'pan') {
       this.tx = this.drag.tx + (p.x - this.drag.sx);
       this.ty = this.drag.ty + (p.y - this.drag.sy);
@@ -424,6 +457,15 @@
 
   View.prototype._up = function (ev) {
     var was = this.mode;
+    if (was === 'col') {
+      this.mode = 'idle';
+      this.drag = null;
+      if (this.opts.onColumnsChange) {
+        this.opts.onColumnsChange(this.data.columns.map(function (c) { return { x0: c.x0, x1: c.x1 }; }));
+      }
+      this.invalidate();
+      return;
+    }
     if (was === 'create' && this.create) {
       var c = this.create;
       var x0 = Math.min(c.x0, c.x1), x1 = Math.max(c.x0, c.x1);
@@ -468,6 +510,7 @@
     } else {
       this._drawPlaceholder();
     }
+    this._drawColumns();
     this._drawGuides();
     this._drawBoxes();
     if (this.mode === 'create' && this.create) {
@@ -509,6 +552,63 @@
       ctx.moveTo(rnd(sx) + 0.5, r.y);
       ctx.lineTo(rnd(sx) + 0.5, r.y + r.h);
       ctx.stroke();
+    }
+    ctx.restore();
+  };
+
+  // ---- 分列线：可拖动调整，用户手动改过就以手动为准
+  View.prototype.setShowColumns = function (on) {
+    this.showCols = !!on;
+    this.invalidate();
+  };
+
+  View.prototype._colBounds = function () {
+    var cols = this.data.columns || [];
+    var out = [];
+    for (var i = 0; i < cols.length; i++) {
+      var c = cols[i];
+      if (i === 0) { out.push(c.x0); }
+      out.push(c.x1);
+    }
+    return out;
+  };
+
+  View.prototype._colBoundaryAt = function (sx) {
+    if (!this.showCols) { return -1; }
+    var bs = this._colBounds();
+    for (var i = 0; i < bs.length; i++) {
+      var px = bs[i] * this.scale + this.tx;
+      if (Math.abs(px - sx) <= 6) { return i; }
+    }
+    return -1;
+  };
+
+  View.prototype._drawColumns = function () {
+    var cols = this.data.columns || [];
+    if (!this.showCols || !cols.length) { return; }
+    var ctx = this.ctx;
+    var bs = this._colBounds();
+    ctx.save();
+    ctx.setLineDash([5, 5]);
+    ctx.lineWidth = 1;
+    for (var i = 0; i < bs.length; i++) {
+      var x = Math.round(bs[i] * this.scale + this.tx) + 0.5;
+      if (x < -2 || x > this.cw + 2) { continue; }
+      ctx.strokeStyle = (i === this.hoverCol) ? 'rgba(250,204,21,0.95)' : 'rgba(96,165,250,0.55)';
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, this.ch);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    // 顶部小把手，提示可以拖
+    for (var k = 0; k < bs.length; k++) {
+      var hx = Math.round(bs[k] * this.scale + this.tx);
+      if (hx < -6 || hx > this.cw + 6) { continue; }
+      ctx.fillStyle = (k === this.hoverCol) ? 'rgba(250,204,21,0.95)' : 'rgba(96,165,250,0.75)';
+      ctx.fillRect(hx - 4, 0, 8, 12);
+      ctx.fillStyle = '#0b1220';
+      ctx.fillRect(hx - 1, 3, 2, 6);
     }
     ctx.restore();
   };

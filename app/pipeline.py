@@ -182,6 +182,15 @@ def process_page(store, pid, progress_cb=None, cancel_cb=None, *, force: bool = 
         _cb(progress_cb, 0.72, "保存分割结果")
         store.save_page_json(pid, page)
 
+    # 自动修正「两列并成一列」的列带（只改 page.json 的 columns，不动框）
+    try:
+        page = dict(page)
+        cols_now = ensure_columns(store, pid, page)
+        if cols_now:
+            page["columns"] = cols_now
+    except Exception:  # noqa: BLE001 - 列修正失败不影响主流程
+        pass
+
     width = store_mod._int(page.get("width"), 0) or store_mod._int(entry.get("width"), 0)
     height = store_mod._int(page.get("height"), 0) or store_mod._int(entry.get("height"), 0)
     glyphs = page.get("glyphs") or []
@@ -440,6 +449,99 @@ def _is_low_box(b, ref_low) -> bool:
     return False
 
 
+
+# ---------------------------------------------------------------- columns
+def _ink_profile(gray, x0: int, x1: int):
+    """Per-x ink amount (dark pixels counted down the page) for a column band."""
+    import numpy as np
+
+    h, w = gray.shape[:2]
+    x0 = max(0, min(w - 1, int(x0)))
+    x1 = max(x0 + 1, min(w, int(x1)))
+    band = gray[:, x0:x1]
+    ink = (band < 120).astype(np.float32)
+    return ink.sum(axis=0)
+
+
+def _band_valley(prof, x0: int):
+    """Best interior cut for a too-wide band: deepest ink valley, else midpoint."""
+    import numpy as np
+
+    w = len(prof)
+    if w < 80:
+        return None
+    lo, hi = int(w * 0.30), int(w * 0.70)
+    seg = prof[lo:hi]
+    if seg.size == 0:
+        return None
+    k = max(3, int(w * 0.03))
+    ker = np.ones(k, np.float32) / float(k)
+    seg = np.convolve(seg, ker, mode='same')
+    idx = int(np.argmin(seg))
+    med = float(np.median(seg))
+    if med <= 0 or float(seg[idx]) > 0.85 * med:
+        return x0 + (w // 2)
+    return x0 + lo + idx
+
+
+def refine_columns(store, pid, page: dict) -> dict:
+    """Split over-wide column bands (two columns merged into one) at ink valleys.
+
+    Only touches page.json['columns'] -- boxes and glyphs are untouched, so all
+    manual box edits survive.  Idempotent (columns_refined flag).
+    """
+    cols = []
+    for i, c in enumerate(page.get("columns") or []):
+        try:
+            x0, x1 = int(c["x0"]), int(c["x1"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if x1 - x0 >= 20:
+            cols.append((x0, x1))
+    if len(cols) < 2:
+        return page
+    cols.sort(key=lambda t: t[0])
+    widths = sorted(b - a for a, b in cols)
+    med = widths[len(widths) // 2]
+    if med <= 0:
+        return page
+    gray = None
+    changed = False
+    for _ in range(10):
+        wide = [i for i, (a, b) in enumerate(cols) if (b - a) > 1.55 * med and (b - a) > 120]
+        if not wide:
+            break
+        i = max(wide, key=lambda k: cols[k][1] - cols[k][0])
+        a, b = cols[i]
+        if gray is None:
+            gray = page_gray(store, pid)
+        prof = _ink_profile(gray, a, b)
+        cut = _band_valley(prof, a)
+        if cut is None or not (a + 60 <= cut <= b - 60):
+            cut = (a + b) // 2
+        cols[i:i + 1] = [(a, cut), (cut, b)]
+        changed = True
+    if not changed:
+        return page
+    page = dict(page)
+    page["columns"] = [{"idx": i, "x0": a, "x1": b, "w": b - a}
+                       for i, (a, b) in enumerate(sorted(cols, key=lambda t: t[0]))]
+    page["columns_refined"] = True
+    store.save_page_json(pid, page)
+    return page
+
+
+def ensure_columns(store, pid, page: dict = None) -> list:
+    """Page columns, auto-splitting merged bands once (unless the user edited them)."""
+    if page is None:
+        page = store.load_page_json(pid)
+    cols = page.get("columns") or []
+    if not cols or page.get("columns_manual") or page.get("columns_refined"):
+        return cols
+    page = refine_columns(store, pid, page)
+    return page.get("columns") or []
+
+
 def page_dict_for_export(store, pid, boxes) -> dict:
     """Assemble the minimal page dict export_tiles() needs, from current boxes."""
     page = store.load_page_json(pid)
@@ -447,6 +549,7 @@ def page_dict_for_export(store, pid, boxes) -> dict:
     if W <= 0 or H <= 0:
         src = store.src(pid)
         W, H = _image_size(src)
+    ensure_columns(store, pid, page)
     cols = _page_columns(page, boxes)
     centers = [(c["x0"] + c["x1"]) / 2.0 for c in cols]
 
