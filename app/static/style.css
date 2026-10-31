@@ -117,7 +117,13 @@ a { color: var(--accent-2); }
 .job-count { font-variant-numeric: tabular-nums; color: var(--text-2); min-width: 52px; text-align: right; }
 
 /* ---------------------------------------------------------------- 主体 */
-.main { flex: 1 1 auto; display: grid; grid-template-columns: 266px minmax(0, 1fr) 352px; min-height: 0; }
+.main { flex: 1 1 auto; display: grid;
+  grid-template-columns: var(--left-w, 266px) minmax(0, 1fr) var(--right-w, 352px);
+  min-height: 0; position: relative; }
+.main.left-collapsed { grid-template-columns: 0 minmax(0, 1fr) var(--right-w, 352px); }
+.main.left-collapsed > .sidebar, .main.left-collapsed > .splitter.s-left { display: none; }
+.main.right-collapsed { grid-template-columns: var(--left-w, 266px) minmax(0, 1fr) 0; }
+.main.right-collapsed > .inspector, .main.right-collapsed > .splitter.s-right { display: none; }
 
 /* 左栏 */
 .sidebar { display: flex; flex-direction: column; min-height: 0; background: var(--panel); border-right: 1px solid var(--line); }
@@ -316,7 +322,7 @@ kbd { font-family: Consolas, ui-monospace, monospace; font-size: 11px; padding: 
 }
 
 @media (max-width: 1360px) {
-  .main { grid-template-columns: 240px minmax(0, 1fr) 326px; }
+  .main { --left-w: 240px; --right-w: 326px; }
   .brand-text .proj { max-width: 160px; }
 }
 /* ---- 规范字对照（离线字库打分） ---- */
@@ -339,3 +345,9 @@ kbd { font-family: Consolas, ui-monospace, monospace; font-size: 11px; padding: 
 .swatch:hover { transform: scale(1.12); }
 .lg.strong { background: #22c55e; }
 .lg.manual { background: #a855f7; }
+/* ---- 可拖拽 / 可折叠侧栏 ---- */
+.splitter { position: absolute; top: 0; bottom: 0; width: 9px; z-index: 40; cursor: col-resize; background: transparent; }
+.splitter:hover, .splitter.dragging { background: rgba(56,189,248,.35); }
+.splitter.s-left { left: var(--left-w, 266px); margin-left: -4px; }
+.splitter.s-right { right: var(--right-w, 352px); margin-right: -4px; }
+.splitter::after { content: ''; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: rgba(148,163,184,.22); }

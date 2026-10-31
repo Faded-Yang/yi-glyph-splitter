@@ -80,6 +80,7 @@
     this.armed = !!on;
     this._cursor(null);
     this._hintCreate();
+    this.invalidate();          // 进入/退出新建模式时立刻重绘十字参考线
   };
 
   View.prototype._hintCreate = function () {
@@ -157,6 +158,29 @@
 
   View.prototype.imgFromScreen = function (sx, sy) {
     return { x: (sx - this.tx) / this.scale, y: (sy - this.ty) / this.scale };
+  };
+
+  // 新建框时的指针参考虚线：贯穿画布的十字准线 + 拖拽锚点延长线
+  View.prototype._drawGuides = function () {
+    if (!this.armed || !this.mouse) { return; }
+    var ctx = this.ctx;
+    var x = Math.round(this.mouse.sx) + 0.5;
+    var y = Math.round(this.mouse.sy) + 0.5;
+    ctx.save();
+    ctx.setLineDash([6, 5]);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(56,189,248,0.70)';
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, this.ch); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(this.cw, y); ctx.stroke();
+    if (this.mode === 'create' && this.create) {
+      // 锚点一侧也延长一条，方便对齐另一条边
+      var ax = Math.round(this.create.x0 * this.scale + this.tx) + 0.5;
+      var ay = Math.round(this.create.y0 * this.scale + this.ty) + 0.5;
+      ctx.globalAlpha = 0.55;
+      ctx.beginPath(); ctx.moveTo(ax, 0); ctx.lineTo(ax, this.ch); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, ay); ctx.lineTo(this.cw, ay); ctx.stroke();
+    }
+    ctx.restore();
   };
 
   View.prototype.rectToScreen = function (x0, y0, x1, y1) {
@@ -350,6 +374,7 @@
       var hit = this.hit(p.x, p.y);
       var hov = hit && hit.type === 'box' ? hit.box.id : null;
       if (hov !== this.hoverId) { this.hoverId = hov; this.invalidate(); }
+      if (this.armed) { this.invalidate(); }   // 让十字准线跟着指针走
       this._hoverCursor(hit, p);
       return;
     }
@@ -434,6 +459,7 @@
     } else {
       this._drawPlaceholder();
     }
+    this._drawGuides();
     this._drawBoxes();
     if (this.mode === 'create' && this.create) {
       var c = this.create;

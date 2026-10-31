@@ -445,7 +445,7 @@
   }
 
   // ------------------------------------------------------------------ 框操作
-  // 规范字校验的虚线是**长期**提示：编辑框、选框都不会清掉它；
+  // 规范字校验的颜色是长期提示：编辑框、选框都不会清掉它；
   // 只有重新跑「规范字校验」或切页载入新的 refcheck 结果时才会更新。
   function setSel(id, opts) {
     var focus = !(opts && opts.focus === false);
@@ -789,11 +789,11 @@
     S.refJobPid = null;
     if (rec && rec.state === 'done') {
       await refreshRefCheck(pid);
-      if (S.refStats) { toast('规范字校验：低分 ' + S.refStats.low + '/' + S.refStats.n + '（虚线常驻）', 'ok'); }
+      if (S.refStats) { toast('规范字校验：低分 ' + S.refStats.low + '/' + S.refStats.n + '（颜色常驻）', 'ok'); }
     }
   }
 
-  // 单个框改完只重算它自己：符合规范字 -> 普通/蓝框；不符合 -> 继续虚线
+  // 单个框改完只重算它自己：很标准->绿线，一般->青线，可疑->红线
   var rescoreTimer = null, rescoreIds = {};
   function rescoreBox(id) {
     if (!S.pageId || !S.glyphbank || id == null) { return; }
@@ -852,7 +852,7 @@
   }
 
   // 保存后服务端会按阅读顺序重编号：按几何把 refLevel/refScore/refTop 搬过去，
-  // 这样虚线不会因为保存一次就消失。
+  // 这样颜色不会因为保存一次就消失。
   function adoptSavedBoxes(list) {
     var old = S.boxes;
     var out = (list || []).map(function (raw) {
@@ -1029,7 +1029,7 @@
     }
     if (S.pageId && (!pageIds || pageIds.indexOf(S.pageId) >= 0)) {
       if (!reloadBoxes) { await reloadBoxesQuiet(); }
-      await loadRefCheck(S.pageId);   // 重新应用常驻虚线
+      await loadRefCheck(S.pageId);   // 重新应用常驻颜色
     }
   }
 
@@ -1268,6 +1268,7 @@
     var mod = e.ctrlKey || e.metaKey;
     if (mod && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); if (e.shiftKey) { redo(); } else { undo(); } return; }
     if (mod && (e.key === 'y' || e.key === 'Y')) { e.preventDefault(); redo(); return; }
+    if (mod && (e.key === 'b' || e.key === 'B')) { e.preventDefault(); if (e.shiftKey) { toggleRight(); } else { toggleLeft(); } return; }
     if (mod && (e.key === 's' || e.key === 'S')) { e.preventDefault(); flushSave(); return; }
     if (e.ctrlKey || e.metaKey || e.altKey) { return; }
     switch (e.key) {
@@ -1385,11 +1386,89 @@
     }
   }
 
+  // --------------------------------------------------------- 侧栏宽度 / 折叠
+  var UI = { leftW: 266, rightW: 352, leftHidden: false, rightHidden: false };
+  var UI_KEY = 'yi.ui.layout';
+
+  function loadUiPrefs() {
+    try {
+      var raw = localStorage.getItem(UI_KEY);
+      if (!raw) { return; }
+      var o = JSON.parse(raw) || {};
+      if (o.leftW) { UI.leftW = o.leftW; }
+      if (o.rightW) { UI.rightW = o.rightW; }
+      UI.leftHidden = !!o.leftHidden;
+      UI.rightHidden = !!o.rightHidden;
+    } catch (e) { /* ignore */ }
+  }
+  function saveUiPrefs() { try { localStorage.setItem(UI_KEY, JSON.stringify(UI)); } catch (e) { /* ignore */ } }
+  function applyUiPrefs() {
+    var m = document.getElementById('mainArea');
+    if (!m) { return; }
+    m.style.setProperty('--left-w', Math.round(UI.leftW) + 'px');
+    m.style.setProperty('--right-w', Math.round(UI.rightW) + 'px');
+    m.classList.toggle('left-collapsed', UI.leftHidden);
+    m.classList.toggle('right-collapsed', UI.rightHidden);
+  }
+  function bumpView() {
+    // 画布依赖 ResizeObserver，但容器宽度是通过 grid 变量改的，主动再触发一次更稳
+    if (view && view._resize) { view._resize(); }
+  }
+  function toggleLeft() { UI.leftHidden = !UI.leftHidden; applyUiPrefs(); saveUiPrefs(); bumpView(); }
+  function toggleRight() { UI.rightHidden = !UI.rightHidden; applyUiPrefs(); saveUiPrefs(); bumpView(); }
+
+  function initPanels() {
+    loadUiPrefs();
+    applyUiPrefs();
+    function drag(which) {
+      return function (ev) {
+        ev.preventDefault();
+        var sp = ev.currentTarget;
+        sp.classList.add('dragging');
+        var startX = ev.clientX;
+        var from = which === 'left' ? UI.leftW : UI.rightW;
+        function move(e) {
+          var dx = e.clientX - startX;
+          var room = Math.max(320, window.innerWidth - 380);
+          if (which === 'left') {
+            UI.leftW = clamp(from + dx, 180, Math.min(620, room));
+          } else {
+            UI.rightW = clamp(from - dx, 260, Math.min(760, room));
+          }
+          applyUiPrefs();
+        }
+        function up() {
+          sp.classList.remove('dragging');
+          document.removeEventListener('pointermove', move);
+          document.removeEventListener('pointerup', up);
+          saveUiPrefs();
+          bumpView();
+        }
+        document.addEventListener('pointermove', move);
+        document.addEventListener('pointerup', up);
+      };
+    }
+    var spL = document.getElementById('spLeft');
+    var spR = document.getElementById('spRight');
+    if (spL) {
+      spL.addEventListener('pointerdown', drag('left'));
+      spL.addEventListener('dblclick', function () { UI.leftW = 266; applyUiPrefs(); saveUiPrefs(); bumpView(); });
+    }
+    if (spR) {
+      spR.addEventListener('pointerdown', drag('right'));
+      spR.addEventListener('dblclick', function () { UI.rightW = 352; applyUiPrefs(); saveUiPrefs(); bumpView(); });
+    }
+    var bl = document.getElementById('btnToggleLeft');
+    var br = document.getElementById('btnToggleRight');
+    if (bl) { bl.addEventListener('click', toggleLeft); }
+    if (br) { br.addEventListener('click', toggleRight); }
+  }
+
   function boot() {
     view = new window.YI.CanvasView({
       canvas: $('#cv'),
       wrap: $('#canvasWrap'),
-      onSelect: function (id) { setSel(id); },   // 点选后全局虚线自动消失
+      onSelect: function (id) { setSel(id); },   
       onEditStart: function () { S.lastSnap = snapshot(); pushUndo(); },
       onEditChange: function () {
         setSaveState('dirty');
@@ -1428,6 +1507,7 @@
       }
     });
     bindAll();
+    initPanels();
     setSaveState('idle');
     setStageHint('正在连接后端…');
     loadState();

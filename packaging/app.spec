@@ -1,5 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec: one-file windowed exe for the Yi glyph segmenter UI."""
+"""PyInstaller spec: onedir build.
+
+dist/YiGlyphSplit/
+    YiGlyphSplit.exe   <- small launcher
+    runtime/           <- python runtime + libs + assets
+"""
 import os
 
 ROOT = os.path.abspath(os.getcwd())
@@ -54,16 +59,23 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="YiGlyphSplit",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    runtime_tmpdir=None,
     console=False,
+    contents_directory="runtime",
     icon=os.path.join(ROOT, "packaging", "app.ico") if os.path.exists(os.path.join(ROOT, "packaging", "app.ico")) else None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    name="YiGlyphSplit",
 )

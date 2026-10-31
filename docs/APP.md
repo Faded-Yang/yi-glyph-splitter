@@ -1,4 +1,20 @@
-# 桌面程序使用说明（YiGlyphSplit.exe）
+# 桌面程序使用说明
+
+## 安装（推荐）
+
+双击 `YiGlyphSplit-1.0.0-Setup.exe` → 中文向导 → 完成。默认装到
+`%LOCALAPPDATA%\Programs\YiGlyphSplit`（不需要管理员权限）。安装目录：
+
+    YiGlyphSplit\
+      YiGlyphSplit.exe      启动器（约 10 MB）
+      runtime\              Python 运行时 + 依赖（约 286 MB）
+      README-install.txt
+      unins000.exe          卸载程序
+
+开始菜单 / 桌面的「彝文切字工具」快捷方式可以直接用；卸载走「设置 → 应用」或开始菜单里的卸载项。
+用户数据（`%LOCALAPPDATA%\yi-segment\`）卸载时不会删除。
+
+**便携版**：把 `dist\YiGlyphSplit\` 整个文件夹拷走，双击里面的 `YiGlyphSplit.exe` 即可。
 
 ## 流程
 
@@ -28,11 +44,13 @@
 | M / Shift+M | 与下一框 / 上一框合并 |
 | 1 / 2 / 0 | 标为确认 / 存疑 / 复位 |
 | ← / → | 上一个 / 下一个框 |
-| Ctrl+Z | 撤销（50 步） |
+| Ctrl+Z / Ctrl+Y | 撤销 / 重做（50 步） |
+| Ctrl+B / Ctrl+Shift+B | 显示/隐藏 左栏 / 右栏 |
+| 拖分隔条 / 双击 | 改侧栏宽度 / 恢复默认 |
 
 ## 命令行（高级）
 
-    YiGlyphSplit.exe [--project D:\work\book1] [--port 8765] [--browser] [--debug]
+    "%LOCALAPPDATA%\Programs\YiGlyphSplit\YiGlyphSplit.exe" [--project D:\work\book1] [--port 8765] [--browser] [--debug]
 
 日志：%LOCALAPPDATA%\yi-segment\logs\app.log
 配置：%LOCALAPPDATA%\yi-segment\config.json（只有导出默认值与上次项目）
