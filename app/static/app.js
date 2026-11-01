@@ -1213,6 +1213,7 @@
     $('#setQuality').value = def.quality != null ? def.quality : 95;
     $('#setProjectPath').value = (S.project && S.project.path) || '';
     loadUserbank();
+  loadSegmentParams();
     var ab = document.getElementById('aboutBuild');
     if (ab) {
       var bd = S.build || '';
@@ -1250,6 +1251,56 @@
     } catch (e) { toast('打开项目失败', 'err', e.message); }
   }
 
+  // ---------------------------------------------------------- 一键处理参数
+  var SP_FIELDS = {
+    cut_base: 'spCutBase', cut_w: 'spCutW', shape_w: 'spShapeW',
+    min_h_frac: 'spMinH', max_h_frac: 'spMaxH', frag_merge_frac: 'spFrag',
+    tall_split_ratio: 'spTallRatio', tall_split_depth: 'spTallDepth',
+    wide_split_ratio: 'spWideRatio', blob_solid: 'spBlobSolid',
+    ink_frac_max: 'spInkMax', core_frac_min: 'spCoreMin'
+  };
+  var SP_CHECKS = {
+    tall_split: 'spTall', wide_split: 'spWide', tighten_boxes: 'spTighten',
+    stain_filter: 'spStain', tpl_dp: 'spTpl'
+  };
+  function fillSegmentParams(p) {
+    Object.keys(SP_FIELDS).forEach(function (k) {
+      var el = document.getElementById(SP_FIELDS[k]);
+      if (el && p[k] != null) { el.value = p[k]; }
+    });
+    Object.keys(SP_CHECKS).forEach(function (k) {
+      var el = document.getElementById(SP_CHECKS[k]);
+      if (el) { el.checked = !!p[k]; }
+    });
+    var info = document.getElementById('spInfo');
+    if (info && p) { info.textContent = '当前参数已加载（保存后「一键处理 / 处理本页」立即生效）'; }
+  }
+  async function loadSegmentParams() {
+    try { var r = await API.get('/api/segment-params'); fillSegmentParams(r.params || {}); } catch (e) { /* ignore */ }
+  }
+  async function saveSegmentParams() {
+    var p = {};
+    Object.keys(SP_FIELDS).forEach(function (k) {
+      var el = document.getElementById(SP_FIELDS[k]);
+      if (el) { p[k] = parseFloat(el.value); }
+    });
+    Object.keys(SP_CHECKS).forEach(function (k) {
+      var el = document.getElementById(SP_CHECKS[k]);
+      if (el) { p[k] = !!el.checked; }
+    });
+    try {
+      var r = await API.put('/api/segment-params', { params: p });
+      fillSegmentParams(r.params || p);
+      toast('处理参数已保存，下次「一键处理」用它', 'ok');
+    } catch (e) { toast('保存处理参数失败', 'err', e.message); }
+  }
+  async function resetSegmentParams() {
+    try {
+      var r = await API.post('/api/segment-params/reset', {});
+      fillSegmentParams(r.params || {});
+      toast('已恢复默认处理参数', 'ok');
+    } catch (e) { toast('恢复默认失败', 'err', e.message); }
+  }
   // ------------------------------------------------------------------ 导出 / AI 对话框
   function openExport() {
     if (!S.pages.length) { toast('还没有页面', 'warn'); return; }
@@ -1537,6 +1588,10 @@
       confirmDialog('一键处理', text, function () { startProcess(ids.length ? ids : 'all'); });
     });
     $('#btnExport').addEventListener('click', openExport);
+    var spSave = document.getElementById('btnSpSave');
+    if (spSave) { spSave.addEventListener('click', saveSegmentParams); }
+    var spReset = document.getElementById('btnSpReset');
+    if (spReset) { spReset.addEventListener('click', resetSegmentParams); }
     $('#btnSettings').addEventListener('click', openDrawer);
     $('#jobCancel').addEventListener('click', cancelJob);
 

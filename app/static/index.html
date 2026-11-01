@@ -207,6 +207,41 @@
       <label class="field">JPG 质量<input id="setQuality" type="number" min="30" max="100" step="1" value="95"></label>
     </div>
 
+    <div class="group-title">一键处理参数（分割器，保存后立即生效）</div>
+    <div class="field-row">
+      <label class="field">切割基准 cut_base<input id="spCutBase" type="number" min="0.2" max="2" step="0.05" title="每次切字的固定代价，越大越不容易过切"></label>
+      <label class="field">切墨惩罚 cut_w<input id="spCutW" type="number" min="0" max="6" step="0.1" title="切在墨上的额外代价"></label>
+      <label class="field">字高权 shape_w<input id="spShapeW" type="number" min="0" max="20" step="0.5" title="字形高度先验权重"></label>
+    </div>
+    <div class="field-row">
+      <label class="field">最小字高比 min_h<input id="spMinH" type="number" min="0.2" max="1" step="0.01"></label>
+      <label class="field">最大字高比 max_h<input id="spMaxH" type="number" min="1" max="3" step="0.05"></label>
+      <label class="field">碎片合并 frag_merge<input id="spFrag" type="number" min="0.1" max="1" step="0.05"></label>
+    </div>
+    <div class="field-row">
+      <label class="check"><input type="checkbox" id="spTall"> 两字粘连补切（上下）</label>
+      <label class="field">补切阈值<input id="spTallRatio" type="number" min="1" max="2" step="0.05" title="高框超过多少倍字高中位数时补切"></label>
+      <label class="field">谷深阈值<input id="spTallDepth" type="number" min="0.3" max="1" step="0.05" title="切点墨量低于多少倍中位数才切"></label>
+    </div>
+    <div class="field-row">
+      <label class="check"><input type="checkbox" id="spWide"> 左右粘连补切</label>
+      <label class="field">宽阈值<input id="spWideRatio" type="number" min="1" max="2.5" step="0.05"></label>
+      <label class="check"><input type="checkbox" id="spTighten"> 收紧框边界（去墨点）</label>
+    </div>
+    <div class="field-row">
+      <label class="check"><input type="checkbox" id="spStain"> 过滤污渍</label>
+      <label class="field">污渍实心度<input id="spBlobSolid" type="number" min="0.5" max="1" step="0.01"></label>
+      <label class="field">墨占比上限<input id="spInkMax" type="number" min="0.3" max="0.9" step="0.01"></label>
+    </div>
+    <div class="field-row">
+      <label class="field">真墨下限<input id="spCoreMin" type="number" min="0" max="0.5" step="0.01"></label>
+      <label class="check"><input type="checkbox" id="spTpl"> 模板似然 DP</label>
+    </div>
+    <div class="row-btns">
+      <button class="btn" id="btnSpSave">保存处理参数</button>
+      <button class="btn" id="btnSpReset">恢复默认</button>
+    </div>
+    <div class="dim" id="spInfo">参数保存在用户目录，保存后「一键处理 / 处理本页」立即生效。</div>
     <div class="group-title">项目</div>
     <label class="field">项目目录<input id="setProjectPath" type="text" placeholder="C:\项目目录"></label>
     <div class="row-btns"><button class="btn" id="btnOpenProject">打开项目</button></div>

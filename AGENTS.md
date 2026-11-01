@@ -239,3 +239,10 @@
 - 踩坑：windowed exe 里 uvicorn 默认日志格式化会崩（`NoneType.isatty`）→ devnull 兜底 + `log_config=None`；
   另外 classes.json 是 `{built,sim,pages,classes}` 结构，加载时必须取 `.classes`，否则 summary 把 dict 当列表（classes=4）并在 /api/classes 500。
 - 实测：exe 启动后 summary 8 页/4379 图/2160 类，/api/classes 200，/api/class/36 返回 44 个成员。
+## 一键处理参数进主程序（2026-11-01 下午）
+- 设置抽屉新增「一键处理参数（分割器）」面板：cut_base / cut_w / shape_w、min_h_frac / max_h_frac / frag_merge_frac、
+  两字粘连补切（开关 / 补切阈值 / 谷深阈值）、左右补切（开关 / 宽阈值）、收紧框边界、污渍过滤（开关 / 实心度 / 墨占比上限）、
+  真墨下限、模板似然 DP 开关；带「保存处理参数」「恢复默认」。
+- API：GET /api/segment-params（返回默认值+当前生效值+文件路径）、PUT（写 %LOCALAPPDATA%/yi-segment/calibration/segment_params.json，类型按 Params 字段强转）、POST /api/segment-params/reset（删文件恢复默认）。
+- 保存后 pipeline.calibration_params() 立即读到 → 下次「一键处理 / 处理本页」生效，无需重启。
+- 验证（打包 exe + CDP）：打开设置后 cut_base=0.9、tall_split_ratio=1.45、提示「当前参数已加载」；API 保存/复位实测通过。

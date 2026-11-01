@@ -941,6 +941,69 @@ def create_app(project_dir: str = "") -> FastAPI:
                 "boxes": [{"x0": b["x0"], "y0": b["y0"], "x1": b["x1"], "y1": b["y1"],
                            "id": i + 1} for i, b in enumerate(boxes)]}
 
+    # ------------------------------------------------- 一键处理参数（分割器）
+    @app.get("/api/segment-params")
+    def api_segment_params_get():
+        import dataclasses as _dc
+        from . import paths as _paths
+        from yi_core import segment_v1 as _S1
+        defaults = {f.name: getattr(_S1.Params(), f.name) for f in _dc.fields(_S1.Params)}
+        ov, src = pipeline.calibration_params()
+        eff = dict(defaults)
+        eff.update({k: v for k, v in (ov or {}).items() if k in defaults})
+        return {"params": eff, "defaults": defaults, "source": src,
+                "file": str(_paths.data_dir() / "calibration" / "segment_params.json")}
+
+    @app.put("/api/segment-params")
+    def api_segment_params_put(body: Any = Body(default_factory=dict)):
+        import dataclasses as _dc
+        from . import paths as _paths
+        from yi_core import segment_v1 as _S1
+        data = body if isinstance(body, dict) else {}
+        raw = data.get("params") if isinstance(data.get("params"), dict) else data
+        fields = {f.name: f for f in _dc.fields(_S1.Params)}
+        base = _S1.Params()
+        clean = {}
+        for name, val in (raw or {}).items():
+            if name not in fields:
+                continue
+            default = getattr(base, name)
+            try:
+                if isinstance(default, bool):
+                    clean[name] = bool(val)
+                elif isinstance(default, int):
+                    clean[name] = int(round(float(val)))
+                elif isinstance(default, float):
+                    clean[name] = float(val)
+                else:
+                    clean[name] = val
+            except (TypeError, ValueError):
+                continue
+        fp = _paths.data_dir() / "calibration" / "segment_params.json"
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        import time as _time
+        payload = {"learned_at": _time.strftime("%Y-%m-%d %H:%M"), "params": clean, "source": "ui"}
+        with open(str(fp), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=1)
+        defaults = {f.name: getattr(base, f.name) for f in _dc.fields(_S1.Params)}
+        eff = dict(defaults)
+        eff.update(clean)
+        return {"ok": True, "params": eff, "file": str(fp)}
+
+    @app.post("/api/segment-params/reset")
+    def api_segment_params_reset():
+        import dataclasses as _dc
+        from . import paths as _paths
+        from yi_core import segment_v1 as _S1
+        fp = _paths.data_dir() / "calibration" / "segment_params.json"
+        try:
+            if fp.is_file():
+                fp.unlink()
+        except OSError:
+            pass
+        defaults = {f.name: getattr(_S1.Params(), f.name) for f in _dc.fields(_S1.Params)}
+        return {"ok": True, "params": defaults, "file": str(fp)}
+
     @app.post("/api/project/open")
     def api_project_open(request: Request, body: Any = Body(default_factory=dict)):
         data = body if isinstance(body, dict) else {}
