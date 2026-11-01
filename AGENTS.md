@@ -309,3 +309,9 @@
   实测 11 页 6024 tile：重建后 pad 比例与备份**完全一致**（0.100/0.050/0.040…），抽样校验 0/5 不一致。
 - glyphmgr Page.pad_policy()：重导出/切分/合并时沿用该页**原有 pad 比例**，不再一律 0.1（避免操作后图像留白/尺度变化）。
 - 注意：out/彝族扫描3-0003_right_46a5 是导出撞名产生的**重复页**（无自己的 TIF，marker 指向 0003_right.tif），已按同源 TIF 重建；是否删除由用户决定。
+
+## 收尾/上传时的坑（2026-11-02）
+- 不要用 `Get-ChildItem -Recurse | Measure-Object` 统计大目录（out 1.7GB / scans 2GB / dist 565MB）→ **120s 超时**；直接 `Remove-Item -Recurse` 或 `cmd /c dir /s`。
+- GitHub MCP `get_file_contents` 传**单文件路径**时 content[0].text 是**文件原文**（不是 JSON 数组）；传目录才是 JSON 文件清单。
+- 本机 git `core.autocrlf=true`：`git ls-files -s` 的 blob sha 是 LF 归一化后的，工作区是 CRLF → 用 sha 跟 GitHub 比对会显示「不同」，实际内容一致（上传用工作区字节）。
+- 项目已终止：`out/`、`scans/`、`dist/`、`build/`、`%LOCALAPPDATA%\yi-segment` 已在本机删除；仓库保留源码/脚本/文档/台账/印刷字库。
