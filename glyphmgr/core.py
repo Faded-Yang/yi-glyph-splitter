@@ -329,6 +329,11 @@ class Library:
         if isinstance(loaded, dict):
             loaded = loaded.get("classes") or []
         self._base = loaded if isinstance(loaded, list) else None
+        if self._base is not None:
+            try:
+                self._migrate_manual()
+            except Exception:
+                pass
         self.classes = self._overlay(self._base) if self._base is not None else None
 
     # -- features + classes
@@ -374,13 +379,13 @@ class Library:
                         "members": [{"page": items[i]["page"], "file": items[i]["file"],
                                      "idx": items[i]["idx"]} for i in members]})
         out.sort(key=lambda c: -c["n"])
-        self._base = out
-        out = self._apply_manual(out)
-        self.classes = out
+        base = out
+        self._base = base
+        self.classes = self._apply_manual(base)
         _write_json(os.path.join(self.state_dir, "classes.json"),
                     {"built": time.strftime("%Y-%m-%d %H:%M"), "sim": sim,
-                     "pages": list(self.pages), "classes": out})
-        return out
+                     "pages": list(self.pages), "classes": base})
+        return self.classes
 
     def class_members(self, cid):
         for c in self.classes or []:
@@ -484,78 +489,145 @@ class Library:
         self.classes = self._overlay(self._base)
         return self.classes
 
-    # -- manual classification ------------------------------------------------
+    # -- manual classification (v2: anchor based, survives re-clustering) -----
     @staticmethod
-    def _key(page, file):
-        return "%s|%s" % (page, file)
+    def _anchor(m):
+        return "%s|%s" % (m.get("page"), m.get("file"))
 
     def _save_manual(self):
+        self.manual["version"] = 2
         _write_json(os.path.join(self.state_dir, "manual.json"), self.manual)
 
-    def _apply_manual(self, classes):
-        """Overlay manual moves/labels on the automatic classes (O(n), not O(n*m))."""
-        base = classes or []
-        labels = self.manual.get("labels") or {}
+    def _migrate_manual(self):
+        """v1 keys (auto:N / new:M) -> v2 anchors so re-clustering keeps edits."""
+        base = self._base or []
         moves = self.manual.get("moves") or {}
-        keyed = {}
-        lookup = {}
+        labels = self.manual.get("labels") or {}
+        needs = (self.manual.get("version") != 2
+                 or any(str(v).startswith(("auto:", "new:")) for v in moves.values())
+                 or any(str(k).startswith(("auto:", "new:")) for k in labels))
+        if not needs:
+            return
+        id2anchor = {}
         for c in base:
-            key = "auto:%d" % c["id"]
-            members = list(c["members"])
-            keyed[key] = {"key": key, "members": members, "auto": c["n"]}
+            ms = c.get("members") or []
+            if ms:
+                id2anchor[int(c["id"])] = self._anchor(ms[0])
+        groups = {}
+        for gk, t in moves.items():
+            if str(t).startswith("new:"):
+                groups.setdefault(str(t), gk)
+        new_moves = {}
+        for gk, t in moves.items():
+            t = str(t)
+            if t.startswith("auto:"):
+                try:
+                    aid = int(t.split(":", 1)[1])
+                except ValueError:
+                    continue
+                a = id2anchor.get(aid)
+                if a:
+                    new_moves[gk] = "A:" + a
+            elif t.startswith("new:"):
+                a = groups.get(t) or gk
+                new_moves[gk] = "M:" + a
+            else:
+                new_moves[gk] = t
+        new_labels = {}
+        for k, v in labels.items():
+            k = str(k)
+            if k.startswith("auto:"):
+                try:
+                    aid = int(k.split(":", 1)[1])
+                except ValueError:
+                    continue
+                a = id2anchor.get(aid)
+                if a:
+                    new_labels[a] = v
+            elif k.startswith("new:"):
+                a = groups.get(k)
+                if a:
+                    new_labels[a] = v
+            else:
+                new_labels[k] = v
+        self.manual["moves"] = new_moves
+        self.manual["labels"] = new_labels
+        self.manual["version"] = 2
+        self._save_manual()
+
+    def _apply_manual(self, classes):
+        """Overlay anchor-based moves/labels on the automatic classes."""
+        base = classes or []
+        moves = self.manual.get("moves") or {}
+        labels = self.manual.get("labels") or {}
+        member_base = {}
+        base_key = {}
+        for c in base:
+            members = list(c.get("members") or [])
+            if not members:
+                continue
+            bid = int(c["id"])
+            base_key[bid] = "A:" + self._anchor(members[0])
             for m in members:
-                lookup[(m["page"], str(m["file"]))] = key
-        for mk, target in moves.items():
-            if "|" not in mk:
-                continue
-            page, file = mk.split("|", 1)
-            src = lookup.pop((page, str(file)), None)
-            if src is None:
-                continue
-            members = keyed[src]["members"]
-            for i, m in enumerate(members):
-                if m["page"] == page and str(m["file"]) == str(file):
-                    del members[i]
-                    break
-            keyed.setdefault(str(target), {"key": str(target), "members": [], "auto": 0})["members"].append(
-                {"page": page, "file": file, "idx": 0})
+                member_base[self._anchor(m)] = bid
+
+        def resolve(akey, depth=0):
+            if depth > 8:
+                return None
+            t = moves.get(akey)
+            if not t:
+                return base_key.get(member_base.get(akey))
+            t = str(t)
+            if t.startswith("A:"):
+                return resolve(t[2:], depth + 1)
+            if t.startswith("M:"):
+                return t
+            return None
+
+        groups = {}
+        for akey, bid in member_base.items():
+            g = resolve(akey) or base_key.get(bid)
+            if g:
+                groups.setdefault(g, []).append(akey)
         out = []
-        next_id = 0
-        for key, c in keyed.items():
-            if not c["members"]:
-                continue
-            out.append({"id": next_id, "key": key, "n": len(c["members"]),
-                        "members": c["members"], "auto": c.get("auto", 0),
-                        "label": labels.get(key, "")})
-            next_id += 1
-        out.sort(key=lambda c: -c["n"])
+        for i, (g, anchors) in enumerate(sorted(groups.items(), key=lambda kv: -len(kv[1]))):
+            members = []
+            for a in anchors:
+                page, _, file = a.partition("|")
+                members.append({"page": page, "file": file})
+            label = ""
+            for a in anchors:
+                if a in labels:
+                    label = labels[a]
+                    break
+            out.append({"id": i, "key": g, "n": len(members), "members": members,
+                        "auto": 0, "label": label})
         return out
 
     def assign(self, items, target="", label=""):
-        """Move glyphs into an existing class key or a brand-new class."""
+        """Move glyphs into an existing class or a brand-new manual class."""
         moves = self.manual["moves"]
+        items = [it for it in (items or []) if it.get("page") and it.get("file")]
+        if not items:
+            return {"ok": True, "moved": 0, "target": str(target or "")}
         tgt = str(target or "")
         if not tgt or tgt == "new":
-            tgt = "new:%d" % int(self.manual.get("next_new", 1))
-            self.manual["next_new"] = int(self.manual.get("next_new", 1)) + 1
-        n = 0
-        for it in items or []:
-            page, file = it.get("page"), it.get("file")
-            if not page or not file:
-                continue
-            moves[self._key(page, file)] = tgt
-            n += 1
+            tgt = "M:" + self._anchor(items[0])
+        elif not (tgt.startswith("A:") or tgt.startswith("M:")):
+            tgt = "A:" + tgt
+        for it in items:
+            moves[self._anchor(it)] = tgt
         if label:
-            self.manual["labels"][tgt] = label
+            self.manual["labels"][tgt[2:] if tgt.startswith(("A:", "M:")) else tgt] = str(label)
         self._save_manual()
         self.refresh_classes()
-        return {"ok": True, "moved": n, "target": tgt}
+        return {"ok": True, "moved": len(items), "target": tgt}
 
     def unassign(self, items):
         moves = self.manual["moves"]
         n = 0
         for it in items or []:
-            k = self._key(it.get("page"), it.get("file"))
+            k = self._anchor(it)
             if k in moves:
                 del moves[k]
                 n += 1
@@ -567,38 +639,46 @@ class Library:
         keyed = {c["key"]: c for c in self.classes or []}
         if src_key not in keyed or dst_key not in keyed:
             return {"ok": False, "error": "类别不存在"}
-        n = 0
         for m in keyed[src_key]["members"]:
-            self.manual["moves"][self._key(m["page"], m["file"])] = dst_key
-            n += 1
+            self.manual["moves"][self._anchor(m)] = dst_key
         self._save_manual()
         self.refresh_classes()
-        return {"ok": True, "merged": n}
+        return {"ok": True, "merged": len(keyed[src_key]["members"])}
 
     def set_label(self, key, label):
-        self.manual["labels"][str(key)] = str(label or "")
+        label = str(label or "")
+        cls = next((c for c in (self.classes or []) if c.get("key") == str(key)), None)
+        if cls and cls.get("members"):
+            a = self._anchor(cls["members"][0])
+            if label:
+                self.manual["labels"][a] = label
+            else:
+                self.manual["labels"].pop(a, None)
+        else:
+            a = str(key)
+            if label:
+                self.manual["labels"][a] = label
+            else:
+                self.manual["labels"].pop(a, None)
         self._save_manual()
         self.refresh_classes()
         return {"ok": True}
 
     def autolabel(self, limit=800, min_score=0.42):
-        """First-pass labels from the printed 规范彝文 bank (offline "vision model").
-
-        Every class is represented by up to 3 sample tiles; the representative
-        ink is matched against the 1428 printed classes.  Labels are only a
-        SUGGESTION -- the user can rename or re-group by hand afterwards.
-        """
         bank = _load_bank()
         if bank is None:
             return {"ok": False, "error": "找不到规范字库 data/glyphbank/bank.npz"}
         f16, f48, labels = bank
         done = 0
         for c in self.classes or []:
-            key = c.get("key") or ("auto:%d" % c["id"])
-            if self.manual.get("labels", {}).get(key):
+            members = c.get("members") or []
+            if not members:
+                continue
+            first = self._anchor(members[0])
+            if first in (self.manual.get("labels") or {}):
                 continue
             inks = []
-            for m in c["members"][:3]:
+            for m in members[:3]:
                 page = self.pages.get(m["page"])
                 if page is None:
                     continue
@@ -624,7 +704,7 @@ class Library:
             j = int(np.argmax(fine))
             score = float(fine[j])
             if score >= min_score:
-                self.manual["labels"][key] = "%s（%.2f）" % (str(labels[int(cand[j])]), score)
+                self.manual["labels"][first] = "%s（%.2f）" % (str(labels[int(cand[j])]), score)
                 done += 1
             if done >= limit:
                 break

@@ -295,3 +295,10 @@
   UI 现在会二次确认「重新分割并覆盖现有框（含人工修改）」，确认后带 force=true 重算；框数/分列随之更新。
 - 验证（项目副本）：force 后 582 → 570 框，page.json 15 列，refcheck 24.5s 完成（首轮含建库）。
 - 注意：force 会丢弃该页人工修改；需要保留时先导出或先备份 project 目录。
+## 字库分类：ML 聚类 + 手动编辑持久化修复（2026-11-01 傍晚3）
+- **改动没保存的真因**：manual.json v1 的键是 auto:<自动类id>/new:<序号>；任何重建分类（刷新分类、小类合并脚本、ML 聚类）都会重新编号 → 你的移动/标签指向了别的类，重开后看着像丢了。
+  修法：manual.json v2 **锚点键**（page|file）。move=某字形→目标字形锚点；label 记在组成员锚点上；overlay 时按锚点解析合并组。
+  验证：把 base 类 id 全部倒序重写后重载，类数与标签不变；打包 exe 内 assign→重启→类仍在（含标签），unassign 可revert。旧 v1 数据在首次加载时自动迁移。
+- ML 聚类：scripts/ml_cluster.py（48x48 ink → 随机 SVD PCA48 → 余弦距离 → scipy average-linkage → 按目标类数选阈值）。
+  --target 900 → base 827 类（阈值 0.42），叠加手动后 440 类；耗时约 1 秒（BLAS 矩阵乘 + nn-chain）。
+  更粗/更细随时重跑：python scripts/ml_cluster.py --target 600 / 1200。注意：重建 base 不会丢 v2 手动编辑。
