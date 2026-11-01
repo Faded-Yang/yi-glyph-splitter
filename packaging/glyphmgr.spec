@@ -15,7 +15,10 @@ a = Analysis(
     [os.path.join(ROOT, "glyphmgr", "app_entry.py")],
     pathex=[ROOT, os.path.join(ROOT, "tools")],
     binaries=[],
-    datas=[(os.path.join(ROOT, "glyphmgr", "static"), os.path.join("glyphmgr", "static"))],
+    datas=[
+        (os.path.join(ROOT, "glyphmgr", "static"), os.path.join("glyphmgr", "static")),
+        (os.path.join(ROOT, "data", "glyphbank"), os.path.join("data", "glyphbank")),
+    ],
     hiddenimports=[
         "glyphmgr.core", "glyphmgr.server",
         "uvicorn", "uvicorn.logging", "uvicorn.loops", "uvicorn.loops.auto",

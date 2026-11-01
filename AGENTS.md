@@ -253,3 +253,14 @@
   ②把选中的目录记到 %LOCALAPPDATA%/yi-segment/glyphmgr.json，下次直接用它；③界面顶部显示当前目录；
   ④找不到时显示输入条：粘贴 out 路径 →「加载这个目录」；新增 API GET/POST /api/root（POST 会重新加载并持久化）。
 - 验证（exe 内）：从 dist/YiGlyphMgr 启动自动找到仓库 out（8 页/4379 图/2160 类）；POST /api/root 切换后 summary 同步，glyphmgr.json 记录路径。
+## glyphmgr 手动分类 + 模型初分类（2026-11-01 下午）
+- 手动分类：点框选中（Ctrl/Shift 多选）→「新建类并放入」/「并入左侧所选类」/「取消手动分类」；左侧类别显示【标签】；
+  右侧可改类别标签、可把当前类整体并入左侧所选类（/api/label、/api/merge-classes）。
+- 手动结果存 out/.glyphmgr/manual.json：{moves:{page|file -> classKey}, labels:{classKey -> label}, next_new}；
+  build_classes 时以自动聚类为底、再叠加手动移动与标签，重算分类不会丢手动结果。
+- 模型初分类：离线用规范字库（data/glyphbank/bank.npz，1428 类）给每个类取最多 3 张样本求平均墨图匹配，
+  得分 >=0.42 的写建议标签（形如 100453（0.65））；已跑 2488 类 → 2213 类有标签，标签可手改。
+- 打包：spec datas 增加 data/glyphbank（bank.npz 5.85MB），exe 总大小 192MB（_internal）。
+- 验证（exe 内）：summary 10 页/2488 类/5462 图；类别列表首行显示【100453（0.65）】；选中框后 selInfo 显示「已选 1 个」；
+  API assign/unassign/merge-classes/autolabel 均通过。
+- 注意：glyphmgr 打开时首次 summary 可能需 5-15 秒（构建/加载 2488 类），前端等待即可。

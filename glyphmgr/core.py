@@ -66,6 +66,58 @@ def _write_json(fp, data):
     os.replace(tmp, fp)
 
 
+_BANK = {"key": None, "data": None}
+
+
+def _bank_paths():
+    here = os.path.dirname(os.path.abspath(__file__))
+    roots = [os.path.join(os.path.dirname(here), "data", "glyphbank"),
+             os.path.join(here, "data", "glyphbank"),
+             os.path.join(os.getcwd(), "data", "glyphbank"),
+             os.path.join(os.getcwd(), "..", "data", "glyphbank")]
+    import sys as _sys
+    if getattr(_sys, "frozen", False):
+        roots.insert(0, os.path.join(os.path.dirname(_sys.executable), "data", "glyphbank"))
+        roots.insert(1, os.path.join(os.path.dirname(_sys.executable), "_internal", "data", "glyphbank"))
+    out = []
+    for root in roots:
+        for name in ("bank.npz", "bank.npz.b64"):
+            fp = os.path.join(root, name)
+            if os.path.isfile(fp):
+                out.append(fp)
+    return out
+
+
+def _load_bank():
+    """(f16, f48, labels) of the printed standard bank, or None."""
+    import base64
+    import io as _io
+    for fp in _bank_paths():
+        try:
+            if fp.lower().endswith(".b64"):
+                raw = base64.b64decode(open(fp, "rb").read())
+                z = np.load(_io.BytesIO(raw))
+            else:
+                z = np.load(fp)
+        except Exception:
+            continue
+        try:
+            refs48 = z["refs48"]
+            refs16 = z["refs16"]
+            labels = z["labels"]
+            n = len(refs48)
+            f16 = refs16.reshape(n, -1).astype(np.float32)
+            f16 -= f16.mean(1, keepdims=True)
+            f16 /= (np.linalg.norm(f16, axis=1, keepdims=True) + 1e-6)
+            f48 = refs48.reshape(n, -1).astype(np.float32)
+            f48 -= f48.mean(1, keepdims=True)
+            f48 /= (np.linalg.norm(f48, axis=1, keepdims=True) + 1e-6)
+            return f16, f48, labels
+        except Exception:
+            continue
+    return None
+
+
 def unit(rows):
     v = np.asarray(rows, np.float32).reshape(len(rows), -1)
     v = v - v.mean(1, keepdims=True)
@@ -257,6 +309,13 @@ class Library:
             d = os.path.join(self.root, name)
             if os.path.isdir(d) and os.path.isfile(os.path.join(d, "index.csv")):
                 self.pages[name] = Page(self.root, name)
+        self.manual = _read_json(os.path.join(self.state_dir, "manual.json"),
+                                 {"moves": {}, "labels": {}, "next_new": 1})
+        if not isinstance(self.manual, dict):
+            self.manual = {"moves": {}, "labels": {}, "next_new": 1}
+        self.manual.setdefault("moves", {})
+        self.manual.setdefault("labels", {})
+        self.manual.setdefault("next_new", 1)
         loaded = _read_json(os.path.join(self.state_dir, "classes.json"), None)
         if isinstance(loaded, dict):
             loaded = loaded.get("classes") or []
@@ -305,6 +364,7 @@ class Library:
                         "members": [{"page": items[i]["page"], "file": items[i]["file"],
                                      "idx": items[i]["idx"]} for i in members]})
         out.sort(key=lambda c: -c["n"])
+        out = self._apply_manual(out)
         self.classes = out
         _write_json(os.path.join(self.state_dir, "classes.json"),
                     {"built": time.strftime("%Y-%m-%d %H:%M"), "sim": sim,
@@ -400,6 +460,159 @@ class Library:
         return {"ok": True, "page": page_name, "merged": [j, j + 1], "n": len(boxes)}
 
     # -- query
+    # -- manual classification ------------------------------------------------
+    @staticmethod
+    def _key(page, file):
+        return "%s|%s" % (page, file)
+
+    def _save_manual(self):
+        _write_json(os.path.join(self.state_dir, "manual.json"), self.manual)
+
+    def _apply_manual(self, classes):
+        """Overlay manual moves/labels on the automatic classes."""
+        if not self.manual.get("moves"):
+            out = []
+            for c in classes:
+                c = dict(c)
+                c["key"] = "auto:%d" % c["id"]
+                c["label"] = (self.manual.get("labels") or {}).get(c["key"], "")
+                c["auto"] = c["n"]
+                out.append(c)
+            return out
+        keyed = {}
+        for c in classes:
+            key = "auto:%d" % c["id"]
+            keyed[key] = {"key": key, "members": list(c["members"]), "auto": c["n"]}
+        for mk, target in self.manual["moves"].items():
+            page, _, file = mk.rpartition("|")
+            if not page:
+                page, file = mk.split("|", 1) if "|" in mk else ("", mk)
+            src = None
+            for key, c in keyed.items():
+                for i, m in enumerate(c["members"]):
+                    if m["page"] == page and str(m["file"]) == str(file):
+                        src = key
+                        del c["members"][i]
+                        break
+                if src:
+                    break
+            if src is None:
+                continue
+            keyed.setdefault(target, {"key": target, "members": [], "auto": 0})["members"].append(
+                {"page": page, "file": file, "idx": 0})
+        out = []
+        next_id = 0
+        for key, c in keyed.items():
+            if not c["members"]:
+                continue
+            out.append({"id": next_id, "key": key, "n": len(c["members"]),
+                        "members": c["members"], "auto": c.get("auto", 0),
+                        "label": (self.manual.get("labels") or {}).get(key, "")})
+            next_id += 1
+        out.sort(key=lambda c: -c["n"])
+        return out
+
+    def assign(self, items, target="", label=""):
+        """Move glyphs into an existing class key or a brand-new class."""
+        moves = self.manual["moves"]
+        tgt = str(target or "")
+        if not tgt or tgt == "new":
+            tgt = "new:%d" % int(self.manual.get("next_new", 1))
+            self.manual["next_new"] = int(self.manual.get("next_new", 1)) + 1
+        n = 0
+        for it in items or []:
+            page, file = it.get("page"), it.get("file")
+            if not page or not file:
+                continue
+            moves[self._key(page, file)] = tgt
+            n += 1
+        if label:
+            self.manual["labels"][tgt] = label
+        self._save_manual()
+        self.build_classes(force=True)
+        return {"ok": True, "moved": n, "target": tgt}
+
+    def unassign(self, items):
+        moves = self.manual["moves"]
+        n = 0
+        for it in items or []:
+            k = self._key(it.get("page"), it.get("file"))
+            if k in moves:
+                del moves[k]
+                n += 1
+        self._save_manual()
+        self.build_classes(force=True)
+        return {"ok": True, "reverted": n}
+
+    def merge_classes(self, src_key, dst_key):
+        keyed = {c["key"]: c for c in self.classes or []}
+        if src_key not in keyed or dst_key not in keyed:
+            return {"ok": False, "error": "类别不存在"}
+        n = 0
+        for m in keyed[src_key]["members"]:
+            self.manual["moves"][self._key(m["page"], m["file"])] = dst_key
+            n += 1
+        self._save_manual()
+        self.build_classes(force=True)
+        return {"ok": True, "merged": n}
+
+    def set_label(self, key, label):
+        self.manual["labels"][str(key)] = str(label or "")
+        self._save_manual()
+        self.build_classes(force=True)
+        return {"ok": True}
+
+    def autolabel(self, limit=800, min_score=0.42):
+        """First-pass labels from the printed 规范彝文 bank (offline "vision model").
+
+        Every class is represented by up to 3 sample tiles; the representative
+        ink is matched against the 1428 printed classes.  Labels are only a
+        SUGGESTION -- the user can rename or re-group by hand afterwards.
+        """
+        bank = _load_bank()
+        if bank is None:
+            return {"ok": False, "error": "找不到规范字库 data/glyphbank/bank.npz"}
+        f16, f48, labels = bank
+        done = 0
+        for c in self.classes or []:
+            key = c.get("key") or ("auto:%d" % c["id"])
+            if self.manual.get("labels", {}).get(key):
+                continue
+            inks = []
+            for m in c["members"][:3]:
+                page = self.pages.get(m["page"])
+                if page is None:
+                    continue
+                fp = page.tile_path(m["file"])
+                if not os.path.isfile(fp):
+                    continue
+                try:
+                    img = load_gray(fp)
+                except Exception:
+                    continue
+                ink = norm_ink(img)
+                if int((ink > 0).sum()) >= 20:
+                    inks.append(ink)
+            if not inks:
+                continue
+            rep = np.mean(np.stack(inks).astype(np.float32), axis=0).astype(np.uint8)
+            v16 = unit(cv2.resize(rep, (COARSE, COARSE), interpolation=cv2.INTER_AREA).reshape(1, -1))[0]
+            v48 = unit(rep.reshape(1, -1))[0]
+            coarse = f16 @ v16
+            take = min(60, len(coarse))
+            cand = np.argpartition(-coarse, take - 1)[:take]
+            fine = f48[cand] @ v48
+            j = int(np.argmax(fine))
+            score = float(fine[j])
+            if score >= min_score:
+                self.manual["labels"][key] = "%s（%.2f）" % (str(labels[int(cand[j])]), score)
+                done += 1
+            if done >= limit:
+                break
+        self._save_manual()
+        self.build_classes(force=True)
+        return {"ok": True, "labeled": done, "total": len(self.classes or [])}
+
     def summary(self):
         return {"pages": [{"name": n, "n": len(p.rows)} for n, p in self.pages.items()],
                 "classes": len(self.classes or []),

@@ -80,6 +80,8 @@ def create_app(root: str, build: bool = False) -> FastAPI:
                 continue
             m = c["members"][0]
             out.append({"id": c["id"], "n": c["n"],
+                        "key": c.get("key") or ("auto:%d" % c["id"]),
+                        "label": c.get("label") or "",
                         "sample": "/api/tile/%s/%s" % (m["page"], m["file"]),
                         "pages": sorted({x["page"] for x in c["members"]})})
         return out
@@ -98,7 +100,10 @@ def create_app(root: str, build: bool = False) -> FastAPI:
             out.append({"page": m["page"], "file": m["file"], "idx": g["idx"],
                         "tile": "/api/tile/%s/%s" % (m["page"], m["file"]),
                         "box": g["box"]})
-        return {"id": cid, "n": len(out), "members": out}
+        cls = next((c for c in (current().classes or []) if int(c["id"]) == int(cid)), {})
+        return {"id": cid, "n": len(out), "members": out,
+                "key": cls.get("key") or ("auto:%d" % cid),
+                "label": cls.get("label") or ""}
 
     @app.get("/api/tile/{page}/{file}")
     def tile(page: str, file: str):
@@ -135,6 +140,36 @@ def create_app(root: str, build: bool = False) -> FastAPI:
     def pages():
         lib = current()
         return [{"name": n, "n": len(p.rows)} for n, p in lib.pages.items()]
+
+    @app.post("/api/assign")
+    async def assign(request: Request):
+        data = await request.json()
+        return current().assign(data.get("items") or [], target=str(data.get("target") or ""),
+                                label=str(data.get("label") or ""))
+
+    @app.post("/api/unassign")
+    async def unassign(request: Request):
+        data = await request.json()
+        return current().unassign(data.get("items") or [])
+
+    @app.post("/api/merge-classes")
+    async def merge_classes(request: Request):
+        data = await request.json()
+        return current().merge_classes(str(data.get("from") or ""), str(data.get("to") or ""))
+
+    @app.post("/api/label")
+    async def set_label(request: Request):
+        data = await request.json()
+        return current().set_label(str(data.get("key") or ""), str(data.get("label") or ""))
+
+    @app.post("/api/autolabel")
+    async def autolabel(request: Request):
+        data = await request.json()
+        try:
+            limit = int(data.get("limit") or 800)
+        except (TypeError, ValueError):
+            limit = 800
+        return current().autolabel(limit=limit)
 
     app.mount("/", StaticFiles(directory=os.path.join(HERE, "static"), html=True), name="static")
     return app

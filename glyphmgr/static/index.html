@@ -44,6 +44,14 @@
   <button id="btnUndo">撤销上一步</button>
   <span id="msg"></span>
 </header>
+<div id="actionBar" style="display:flex;align-items:center;gap:8px;padding:6px 14px;background:#121820;border-bottom:1px solid #26303d;">
+  <span id="selInfo" class="n">已选 0 个（点框选择，Ctrl/Shift 多选）</span>
+  <button id="btnNewClass">新建类并放入</button>
+  <button id="btnAssignClass">并入左侧所选类</button>
+  <button id="btnUnassign">取消手动分类</button>
+  <button id="btnAutolabel" title="用离线规范字库给每一类一个建议标签（可手动改）">模型初分类</button>
+  <span id="msg2" style="color:#34d399"></span>
+</div>
 <div id="rootBar" style="display:none;align-items:center;gap:8px;padding:6px 14px;background:#1a2330;border-bottom:1px solid #26303d;">
   <span>没有找到 out 文件夹：</span>
   <input id="rootInput" type="text" placeholder="把 out 文件夹路径粘到这里，例如 D:\项目\out" style="flex:1;max-width:720px;padding:4px 8px;background:#0e141b;border:1px solid #334152;color:#d7e2ee;border-radius:6px;">
@@ -53,6 +61,12 @@
   <div id="classes"></div>
   <div id="right">
     <div id="hint">左边选一个字形类，右边会列出这一类出现在所有页上的框（页名 + 框号）。</div>
+    <div id="clsTools" style="display:none;align-items:center;gap:8px;margin:6px 0 10px;">
+      <span>类别标签：</span>
+      <input id="clsLabel" type="text" placeholder="例如 100453 / 自定义名" style="width:220px;padding:4px 8px;background:#0e141b;border:1px solid #334152;color:#d7e2ee;border-radius:6px;">
+      <button id="btnSaveLabel">保存标签</button>
+      <button id="btnMergeClass" title="把当前类别整体并入左侧选中的类别">本类并入左侧所选类</button>
+    </div>
     <div id="grid"></div>
     <div id="panel">
       <h3 id="panelTitle"></h3>
@@ -73,7 +87,19 @@
   </div>
 </main>
 <script>
-var S = { classes: [], selClass: null, selGlyph: null };
+var S = { classes: [], selClass: null, selGlyph: null, selClassKey: '', sel: {} };
+function selKey(m) { return m.page + '|' + m.file; }
+function selCount() { return Object.keys(S.sel).length; }
+function updateSelInfo() {
+  var el2 = document.getElementById('selInfo');
+  if (el2) { el2.textContent = '已选 ' + selCount() + ' 个（点框选择，Ctrl/Shift 多选；再点一次取消）'; }
+}
+function selItems() {
+  return Object.keys(S.sel).map(function (k) {
+    var p = k.split('|');
+    return { page: p[0], file: p.slice(1).join('|') };
+  });
+}
 
 function api(path, body, method) {
   return fetch(path, {
@@ -121,16 +147,25 @@ async function loadClasses() {
     var img = document.createElement('img'); img.src = c.sample; img.loading = 'lazy';
     row.appendChild(img);
     row.appendChild(el('div', '', c.n + ' 个'));
-    row.appendChild(el('div', 'n', c.pages.length > 2 ? (c.pages[0] + ' 等 ' + c.pages.length + ' 页') : c.pages.join('、')));
-    row.onclick = function () { selectClass(c.id); };
+    var sub = el('div', 'n', c.pages.length > 2 ? (c.pages[0] + ' 等 ' + c.pages.length + ' 页') : c.pages.join('、'));
+    if (c.label) { sub.textContent = '【' + c.label + '】' + sub.textContent; }
+    row.appendChild(sub);
+    row.onclick = function () { window.__targetClassKey = c.key || ('auto:' + c.id); selectClass(c.id); };
     box.appendChild(row);
   });
 }
 
 async function selectClass(cid) {
   S.selClass = cid; S.selGlyph = null;
+  var found = null;
+  for (var i = 0; i < S.classes.length; i++) { if (S.classes[i].id === cid) { found = S.classes[i]; } }
+  S.selClassKey = found ? (found.key || ('auto:' + cid)) : ('auto:' + cid);
   await loadClasses();
   var d = await api('/api/class/' + cid);
+  var tools = document.getElementById('clsTools');
+  if (tools) { tools.style.display = 'flex'; }
+  var lab = document.getElementById('clsLabel');
+  if (lab) { lab.value = d.label || ''; }
   var grid = document.getElementById('grid');
   grid.innerHTML = '';
   document.getElementById('hint').textContent = '第 ' + cid + ' 类，共 ' + d.n + ' 个框。点一个框做切分/合并。';
@@ -139,14 +174,27 @@ async function selectClass(cid) {
     var img = document.createElement('img'); img.src = m.tile; img.loading = 'lazy';
     g.appendChild(img);
     g.appendChild(el('div', 'cap', m.page.replace('彝族扫描', '') + ' #' + m.idx));
-    g.onclick = function () { selectGlyph(m); };
+    g.onclick = function (ev) {
+      if (ev && (ev.ctrlKey || ev.metaKey || ev.shiftKey)) {
+        var k = selKey(m);
+        if (S.sel[k]) { delete S.sel[k]; g.classList.remove('sel'); }
+        else { S.sel[k] = m; g.classList.add('sel'); }
+        updateSelInfo();
+        return;
+      }
+      selectGlyph(m, g);
+    };
     grid.appendChild(g);
   });
 }
 
-function selectGlyph(m) {
+function selectGlyph(m, node) {
   S.selGlyph = m;
+  S.sel = {};
+  if (node) { S.sel[selKey(m)] = m; }
   Array.prototype.forEach.call(document.querySelectorAll('.g'), function (n) { n.classList.remove('sel'); });
+  if (node) { node.classList.add('sel'); }
+  updateSelInfo();
   var panel = document.getElementById('panel');
   panel.style.display = 'block';
   document.getElementById('panelTitle').textContent = m.page + ' · 第 ' + m.idx + ' 框';
@@ -216,6 +264,71 @@ document.getElementById('btnUndo').onclick = async function () {
 };
 
 document.getElementById('btnApplyRoot').onclick = applyRoot;
+
+document.getElementById('btnSaveLabel').onclick = async function () {
+  var key = S.selClassKey;
+  if (!key) { msg('先选一个类别'); return; }
+  try {
+    var v = document.getElementById('clsLabel').value;
+    await api('/api/label', { key: key, label: v });
+    msg('标签已保存');
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
+
+document.getElementById('btnMergeClass').onclick = async function () {
+  var from = S.selClassKey;
+  var to = window.__targetClassKey || '';
+  if (!from || !to) { msg('先把左侧选中目标类别（点一下左边的类别）'); return; }
+  if (from === to) { msg('同一个类别'); return; }
+  try {
+    var r = await api('/api/merge-classes', { from: from, to: to });
+    msg('已并入 ' + r.merged + ' 个框');
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
+
+document.getElementById('btnNewClass').onclick = async function () {
+  if (!selCount()) { msg('先选一些框'); return; }
+  var name2 = prompt('新类别的名字 / 标签（可空）', '');
+  if (name2 === null) { return; }
+  try {
+    var r = await api('/api/assign', { items: selItems(), target: 'new', label: name2 || '' });
+    msg('已新建类别并放入 ' + r.moved + ' 个');
+    S.sel = {}; updateSelInfo();
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
+
+document.getElementById('btnAssignClass').onclick = async function () {
+  if (!selCount()) { msg('先选一些框'); return; }
+  if (!S.selClassKey) { msg('先在左边点一个目标类别'); return; }
+  try {
+    var r = await api('/api/assign', { items: selItems(), target: S.selClassKey });
+    msg('已并入 ' + r.moved + ' 个框');
+    S.sel = {}; updateSelInfo();
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
+
+document.getElementById('btnUnassign').onclick = async function () {
+  if (!selCount()) { msg('先选一些框'); return; }
+  try {
+    var r = await api('/api/unassign', { items: selItems() });
+    msg('已取消手动分类 ' + r.reverted + ' 个');
+    S.sel = {}; updateSelInfo();
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
+
+document.getElementById('btnAutolabel').onclick = async function () {
+  msg('模型初分类中…');
+  try {
+    var r = await api('/api/autolabel', { limit: 800 });
+    msg(r.ok ? ('已给 ' + r.labeled + ' 类生成建议标签（共 ' + r.total + ' 类）') : ('失败：' + r.error));
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
 document.getElementById('btnReload').onclick = async function () {
   try {
     await api('/api/build', {});
