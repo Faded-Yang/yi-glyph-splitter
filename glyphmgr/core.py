@@ -319,7 +319,8 @@ class Library:
         loaded = _read_json(os.path.join(self.state_dir, "classes.json"), None)
         if isinstance(loaded, dict):
             loaded = loaded.get("classes") or []
-        self.classes = loaded if isinstance(loaded, list) else None
+        self._base = loaded if isinstance(loaded, list) else None
+        self.classes = self._overlay(self._base) if self._base is not None else None
 
     # -- features + classes
     def build_classes(self, force=False, sim=CLUSTER_SIM):
@@ -364,6 +365,7 @@ class Library:
                         "members": [{"page": items[i]["page"], "file": items[i]["file"],
                                      "idx": items[i]["idx"]} for i in members]})
         out.sort(key=lambda c: -c["n"])
+        self._base = out
         out = self._apply_manual(out)
         self.classes = out
         _write_json(os.path.join(self.state_dir, "classes.json"),
@@ -460,6 +462,19 @@ class Library:
         return {"ok": True, "page": page_name, "merged": [j, j + 1], "n": len(boxes)}
 
     # -- query
+    def _overlay(self, base):
+        if base is None:
+            return None
+        return self._apply_manual(base)
+
+    def refresh_classes(self):
+        """Re-apply manual moves/labels WITHOUT re-running the clustering (fast)."""
+        if self._base is None:
+            self.build_classes(force=True)
+            return self.classes
+        self.classes = self._overlay(self._base)
+        return self.classes
+
     # -- manual classification ------------------------------------------------
     @staticmethod
     def _key(page, file):
@@ -529,7 +544,7 @@ class Library:
         if label:
             self.manual["labels"][tgt] = label
         self._save_manual()
-        self.build_classes(force=True)
+        self.refresh_classes()
         return {"ok": True, "moved": n, "target": tgt}
 
     def unassign(self, items):
@@ -541,7 +556,7 @@ class Library:
                 del moves[k]
                 n += 1
         self._save_manual()
-        self.build_classes(force=True)
+        self.refresh_classes()
         return {"ok": True, "reverted": n}
 
     def merge_classes(self, src_key, dst_key):
@@ -553,13 +568,13 @@ class Library:
             self.manual["moves"][self._key(m["page"], m["file"])] = dst_key
             n += 1
         self._save_manual()
-        self.build_classes(force=True)
+        self.refresh_classes()
         return {"ok": True, "merged": n}
 
     def set_label(self, key, label):
         self.manual["labels"][str(key)] = str(label or "")
         self._save_manual()
-        self.build_classes(force=True)
+        self.refresh_classes()
         return {"ok": True}
 
     def autolabel(self, limit=800, min_score=0.42):
@@ -610,7 +625,7 @@ class Library:
             if done >= limit:
                 break
         self._save_manual()
-        self.build_classes(force=True)
+        self.refresh_classes()
         return {"ok": True, "labeled": done, "total": len(self.classes or [])}
 
     def summary(self):
