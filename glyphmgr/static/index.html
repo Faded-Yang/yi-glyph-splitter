@@ -14,6 +14,13 @@
   button.primary { background: #1d4ed8; border-color: #2563eb; }
   main { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 45px); }
   #classes { overflow: auto; border-right: 1px solid #26303d; background: #121820; }
+  #classes.grid { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; padding: 8px; }
+  #classes.grid .cls { width: 104px; flex: 0 0 auto; display: block; padding: 4px; border: 1px solid #1e2836; border-radius: 6px; background: #131a23; text-align: center; }
+  #classes.grid .cls img { width: 88px; height: 88px; object-fit: contain; background: #0b1016; border-radius: 4px; }
+  #classes.grid .cls .n { font-size: 10.5px; color: #8aa2b8; line-height: 1.25; word-break: break-all; }
+  #classes.grid .cls .lab { color: #cfe0f0; font-size: 10.5px; }
+  #classes.grid .cls.sel { border-color: #facc15; box-shadow: 0 0 0 1px rgba(250,204,21,.35); }
+  #moreWrap { padding: 8px; text-align: center; }
   .cls { display: flex; align-items: center; gap: 8px; padding: 6px 10px; cursor: pointer; border-bottom: 1px solid #1b2430; }
   .cls:hover { background: #1a2230; }
   .cls.sel { background: #1f2c3d; }
@@ -41,6 +48,7 @@
   <span class="sp"></span>
   <label>最少同类 <input id="minN" type="number" value="1" min="1" style="width:56px"> 个</label>
   <button id="btnReload">刷新分类</button>
+  <button id="btnMergeSmall" title="把所有少于 3 个的类并进最相似的大类">合并小类</button>
   <button id="btnUndo">撤销上一步</button>
   <span id="msg"></span>
 </header>
@@ -58,7 +66,7 @@
   <button id="btnApplyRoot">加载这个目录</button>
 </div>
 <main>
-  <div id="classes"></div>
+  <div id="classes" class="grid"></div>
   <div id="right">
     <div id="hint">左边选一个字形类，右边会列出这一类出现在所有页上的框（页名 + 框号）。</div>
     <div id="clsTools" style="display:none;align-items:center;gap:8px;margin:6px 0 10px;">
@@ -135,24 +143,40 @@ async function applyRoot() {
   } catch (e) { msg('加载失败：' + e.message); }
 }
 
+var PAGE = 240;
 async function loadClasses() {
   var minN = parseInt(document.getElementById('minN').value || '1', 10);
   var list = await api('/api/classes?min_n=' + minN);
   S.classes = list;
+  S.classPage = 1;
+  renderClassPage(true);
+}
+
+function renderClassPage(reset) {
   var box = document.getElementById('classes');
-  box.innerHTML = '';
-  list.forEach(function (c) {
+  if (reset) { box.innerHTML = ''; }
+  var oldMore = document.getElementById('moreWrap');
+  if (oldMore) { oldMore.parentNode.removeChild(oldMore); }
+  var shown = Math.min((S.classPage || 1) * PAGE, S.classes.length);
+  for (var i = reset ? 0 : (S.classPage - 1) * PAGE; i < shown; i++) {
+    var c = S.classes[i];
     var row = el('div', 'cls');
-    if (S.selClass === c.id) row.classList.add('sel');
+    if (S.selClass === c.id) { row.classList.add('sel'); }
     var img = document.createElement('img'); img.src = c.sample; img.loading = 'lazy';
     row.appendChild(img);
-    row.appendChild(el('div', '', c.n + ' 个'));
-    var sub = el('div', 'n', c.pages.length > 2 ? (c.pages[0] + ' 等 ' + c.pages.length + ' 页') : c.pages.join('、'));
-    if (c.label) { sub.textContent = '【' + c.label + '】' + sub.textContent; }
-    row.appendChild(sub);
-    row.onclick = function () { window.__targetClassKey = c.key || ('auto:' + c.id); selectClass(c.id); };
+    var lab = el('div', 'lab', c.label || '');
+    row.appendChild(lab);
+    row.appendChild(el('div', 'n', c.n + ' 个 · ' + (c.pages ? c.pages.length : 0) + ' 页'));
+    row.onclick = function (cc) { return function () { window.__targetClassKey = cc.key || ('auto:' + cc.id); selectClass(cc.id); }; }(c);
     box.appendChild(row);
-  });
+  }
+  if (shown < S.classes.length) {
+    var wrap = el('div', ''); wrap.id = 'moreWrap';
+    var btn = el('button', '', '显示更多（' + (S.classes.length - shown) + ' 类剩余）');
+    btn.onclick = function () { S.classPage = (S.classPage || 1) + 1; renderClassPage(false); };
+    wrap.appendChild(btn);
+    box.parentNode.appendChild(wrap);
+  }
 }
 
 async function selectClass(cid) {
@@ -264,6 +288,16 @@ document.getElementById('btnUndo').onclick = async function () {
 };
 
 document.getElementById('btnApplyRoot').onclick = applyRoot;
+
+document.getElementById('btnMergeSmall').onclick = async function () {
+  if (!confirm('把所有少于 3 个的类并进最相似的大类？（本地计算，不花识图费用）')) { return; }
+  msg('合并中…');
+  try {
+    var r = await api('/api/merge-small', { min_n: 3, thr: 0.35 });
+    msg('已合并 ' + r.merged + ' 个小类，现在 ' + r.classes + ' 类');
+    await loadClasses(); await refreshStats();
+  } catch (e) { msg('失败：' + e.message); }
+};
 
 document.getElementById('btnSaveLabel').onclick = async function () {
   var key = S.selClassKey;

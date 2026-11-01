@@ -141,6 +141,19 @@ def create_app(root: str, build: bool = False) -> FastAPI:
         lib = current()
         return [{"name": n, "n": len(p.rows)} for n, p in lib.pages.items()]
 
+    @app.post("/api/merge-small")
+    async def merge_small(request: Request):
+        data = await request.json()
+        try:
+            min_n = int(data.get("min_n") or 3)
+        except (TypeError, ValueError):
+            min_n = 3
+        try:
+            thr = float(data.get("thr") or 0.35)
+        except (TypeError, ValueError):
+            thr = 0.35
+        return current().merge_small(min_n=min_n, thr=thr)
+
     @app.post("/api/assign")
     async def assign(request: Request):
         data = await request.json()

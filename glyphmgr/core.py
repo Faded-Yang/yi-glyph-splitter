@@ -63,7 +63,16 @@ def _write_json(fp, data):
     tmp = fp + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, fp)
+    last = None
+    for _ in range(20):
+        try:
+            os.replace(tmp, fp)
+            return
+        except PermissionError as exc:   # OneDrive / AV briefly locks the file
+            last = exc
+            import time as _time
+            _time.sleep(0.15)
+    raise last
 
 
 _BANK = {"key": None, "data": None}
@@ -484,36 +493,31 @@ class Library:
         _write_json(os.path.join(self.state_dir, "manual.json"), self.manual)
 
     def _apply_manual(self, classes):
-        """Overlay manual moves/labels on the automatic classes."""
-        if not self.manual.get("moves"):
-            out = []
-            for c in classes:
-                c = dict(c)
-                c["key"] = "auto:%d" % c["id"]
-                c["label"] = (self.manual.get("labels") or {}).get(c["key"], "")
-                c["auto"] = c["n"]
-                out.append(c)
-            return out
+        """Overlay manual moves/labels on the automatic classes (O(n), not O(n*m))."""
+        base = classes or []
+        labels = self.manual.get("labels") or {}
+        moves = self.manual.get("moves") or {}
         keyed = {}
-        for c in classes:
+        lookup = {}
+        for c in base:
             key = "auto:%d" % c["id"]
-            keyed[key] = {"key": key, "members": list(c["members"]), "auto": c["n"]}
-        for mk, target in self.manual["moves"].items():
-            page, _, file = mk.rpartition("|")
-            if not page:
-                page, file = mk.split("|", 1) if "|" in mk else ("", mk)
-            src = None
-            for key, c in keyed.items():
-                for i, m in enumerate(c["members"]):
-                    if m["page"] == page and str(m["file"]) == str(file):
-                        src = key
-                        del c["members"][i]
-                        break
-                if src:
-                    break
+            members = list(c["members"])
+            keyed[key] = {"key": key, "members": members, "auto": c["n"]}
+            for m in members:
+                lookup[(m["page"], str(m["file"]))] = key
+        for mk, target in moves.items():
+            if "|" not in mk:
+                continue
+            page, file = mk.split("|", 1)
+            src = lookup.pop((page, str(file)), None)
             if src is None:
                 continue
-            keyed.setdefault(target, {"key": target, "members": [], "auto": 0})["members"].append(
+            members = keyed[src]["members"]
+            for i, m in enumerate(members):
+                if m["page"] == page and str(m["file"]) == str(file):
+                    del members[i]
+                    break
+            keyed.setdefault(str(target), {"key": str(target), "members": [], "auto": 0})["members"].append(
                 {"page": page, "file": file, "idx": 0})
         out = []
         next_id = 0
@@ -522,7 +526,7 @@ class Library:
                 continue
             out.append({"id": next_id, "key": key, "n": len(c["members"]),
                         "members": c["members"], "auto": c.get("auto", 0),
-                        "label": (self.manual.get("labels") or {}).get(key, "")})
+                        "label": labels.get(key, "")})
             next_id += 1
         out.sort(key=lambda c: -c["n"])
         return out
@@ -627,6 +631,55 @@ class Library:
         self._save_manual()
         self.refresh_classes()
         return {"ok": True, "labeled": done, "total": len(self.classes or [])}
+
+    def _class_mean_ink(self, c, k=3):
+        inks = []
+        for m in c["members"][:k]:
+            page = self.pages.get(m["page"])
+            if page is None:
+                continue
+            fp = page.tile_path(m["file"])
+            if not os.path.isfile(fp):
+                continue
+            try:
+                inks.append(norm_ink(load_gray(fp)))
+            except Exception:
+                continue
+        if not inks:
+            return None
+        return np.mean(np.stack(inks).astype(np.float32), axis=0).astype(np.uint8)
+
+    def _class_feature(self, c):
+        ink = self._class_mean_ink(c)
+        if ink is None:
+            return None
+        return unit(cv2.resize(ink, (SIDE, SIDE), interpolation=cv2.INTER_AREA).reshape(1, -1))[0]
+
+    def merge_small(self, min_n=3, thr=0.35):
+        """Merge classes with <min_n members into the most similar bigger class."""
+        classes = self.classes or []
+        small = [c for c in classes if c["n"] < int(min_n)]
+        big = [c for c in classes if c["n"] >= int(min_n)]
+        if not small or not big:
+            return {"ok": True, "merged": 0, "classes": len(classes)}
+        big_nodes = [(c, self._class_feature(c)) for c in big]
+        big_nodes = [(c, f) for c, f in big_nodes if f is not None]
+        if not big_nodes:
+            return {"ok": True, "merged": 0, "classes": len(classes)}
+        FB = np.stack([f for _, f in big_nodes])
+        merged = 0
+        for c in small:
+            f = self._class_feature(c)
+            if f is None:
+                continue
+            sims = FB @ f
+            j = int(np.argmax(sims))
+            if float(sims[j]) < thr:
+                continue
+            if self.merge_classes(c.get("key"), big_nodes[j][0].get("key")).get("ok"):
+                merged += 1
+        self.refresh_classes()
+        return {"ok": True, "merged": merged, "classes": len(self.classes or [])}
 
     def summary(self):
         return {"pages": [{"name": n, "n": len(p.rows)} for n, p in self.pages.items()],
