@@ -38,7 +38,7 @@ def meta_path():
 
 
 CLUSTER_SIM = 0.72     # two glyphs are "the same form" above this cosine similarity (48x48 ink)
-CLUSTER_VERSION = 2
+CLUSTER_VERSION = 3
 
 
 def _unit_rows(feats: np.ndarray) -> np.ndarray:
@@ -46,6 +46,29 @@ def _unit_rows(feats: np.ndarray) -> np.ndarray:
     v = v - v.mean(1, keepdims=True)
     v /= (np.linalg.norm(v, axis=1, keepdims=True) + 1e-6)
     return v
+
+
+def cluster_centroids(feats: np.ndarray, entries: list):
+    """(centroid matrix, cluster ids, counts) from already-clustered entries."""
+    n = len(feats)
+    ids = []
+    for e in entries[:n]:
+        cid = e.get("cluster") if isinstance(e, dict) else None
+        ids.append(int(cid) if cid is not None else -1)
+    good = [i for i in range(n) if ids[i] >= 0]
+    if not good:
+        return None, None, None
+    v = _unit_rows(feats)
+    uniq = sorted({ids[i] for i in good})
+    idx = {c: k for k, c in enumerate(uniq)}
+    C = np.zeros((len(uniq), v.shape[1]), np.float32)
+    counts = np.zeros(len(uniq), np.float32)
+    for i in good:
+        C[idx[ids[i]]] += v[i]
+        counts[idx[ids[i]]] += 1.0
+    C /= np.maximum(counts[:, None], 1.0)
+    C /= (np.linalg.norm(C, axis=1, keepdims=True) + 1e-6)
+    return C, uniq, counts
 
 
 def assign_clusters(feats: np.ndarray, entries: list) -> list:
@@ -122,7 +145,19 @@ def load() -> dict:
             entries = entries[:n] + [{}] * max(0, n - len(entries))
         meta_now = _read_meta()
         if meta_now.get("cluster_version") != CLUSTER_VERSION:
-            assign_clusters(refs48.reshape(n, -1), entries)
+            # 只补缺失的 cluster，绝不重算整个库（重算是 O(n^2)，5000+ 字形会把程序卡死）
+            feats48 = refs48.reshape(n, -1)
+            C, uniq, _ = cluster_centroids(feats48, entries)
+            v = _unit_rows(feats48)
+            next_id = (max(uniq) + 1) if uniq else 0
+            for i, e in enumerate(entries[:n]):
+                if isinstance(e, dict) and e.get("cluster") is None:
+                    if C is not None:
+                        j = int(np.argmax(C @ v[i]))
+                        e["cluster"] = int(uniq[j])
+                    else:
+                        e["cluster"] = next_id
+                        next_id += 1
             try:
                 with open(str(meta_path()), "w", encoding="utf-8") as f:
                     json.dump({"entries": entries, "cluster_version": CLUSTER_VERSION,
@@ -159,8 +194,14 @@ def stats() -> dict:
     for e in entries:
         lv = e.get("level") or "unknown"
         by_level[lv] = by_level.get(lv, 0) + 1
+    pages = {}
+    for e in entries:
+        nm = e.get("page") or "?"
+        pages[nm] = pages.get(nm, 0) + 1
+    page_list = [{"name": k, "n": v} for k, v in sorted(pages.items())]
     return {"n": len(entries), "labels": labels, "by_level": by_level,
             "clusters": len(clusters), "cluster_sizes": clusters,
+            "pages": page_list, "pages_count": len(page_list),
             "updated": meta.get("updated") or "", "file": str(npz_path())}
 
 
@@ -176,7 +217,9 @@ def add_glyphs(glyphs, *, page: str = "", label_of=None) -> dict:
     """
     items = list(glyphs or [])
     if not items:
-        return stats()
+        out = stats()
+        out["added"] = 0
+        return out
     meta = _read_meta()
     entries = meta.get("entries") or []
     seen = {(e.get("page") or "", e.get("x0"), e.get("y0"), e.get("x1"), e.get("y1")) for e in entries}
@@ -201,7 +244,9 @@ def add_glyphs(glyphs, *, page: str = "", label_of=None) -> dict:
                             "saved_at": time.strftime("%Y-%m-%d %H:%M")})
         seen.add(key)
     if not new_48:
-        return stats()
+        out = stats()
+        out["added"] = 0
+        return out
     if entries:
         z = np.load(str(npz_path()))
         old48, old16, old_labels = z["refs48"], z["refs16"], list(z["labels"])
@@ -213,7 +258,29 @@ def add_glyphs(glyphs, *, page: str = "", label_of=None) -> dict:
     refs16 = np.concatenate([old16, np.stack(new_16)], axis=0)
     labels = np.array(old_labels + new_labels, dtype=object).astype(str)
     all_entries = entries + new_entries
-    assign_clusters(refs48.reshape(len(refs48), -1), all_entries)
+    feats = refs48.reshape(len(refs48), -1)
+    old_n = len(entries)
+    if old_n:
+        C, uniq, _ = cluster_centroids(feats[:old_n], entries)
+    else:
+        C, uniq = None, None
+    v_new = _unit_rows(feats[old_n:])
+    if C is not None and len(v_new):
+        sims = v_new @ C.T
+        best = np.argmax(sims, axis=1)
+        next_id = int(max(uniq) + 1) if uniq else 0
+        for k, row in enumerate(new_entries):
+            if float(sims[k, best[k]]) >= CLUSTER_SIM:
+                row["cluster"] = int(uniq[int(best[k])])
+            else:
+                row["cluster"] = next_id
+                next_id += 1
+    else:
+        for k, row in enumerate(new_entries):
+            row["cluster"] = k
+    for i, e in enumerate(entries[:old_n]):
+        if isinstance(e, dict) and e.get("cluster") is None:
+            e["cluster"] = (C is not None and int(uniq[0])) or 0
     np.savez_compressed(str(npz_path()), refs48=refs48, refs16=refs16, labels=labels)
     entries = all_entries
     meta = {"entries": entries, "cluster_version": CLUSTER_VERSION,
@@ -221,4 +288,6 @@ def add_glyphs(glyphs, *, page: str = "", label_of=None) -> dict:
     with open(str(meta_path()), "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=1)
     reset_cache()
-    return stats()
+    out = stats()
+    out["added"] = len(new_48)
+    return out

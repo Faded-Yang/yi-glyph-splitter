@@ -1076,9 +1076,10 @@
     }).catch(function (e) { toast('取消失败', 'err', e.message); });
   }
 
-  async function startProcess(ids) {
+  async function startProcess(ids, opts) {
     var res;
-    try { res = await API.post('/api/pages/process', { ids: ids }); }
+    var force = !!(opts && opts.force);
+    try { res = await API.post('/api/pages/process', { ids: ids, force: force }); }
     catch (e) { toast('启动处理失败', 'err', e.message); return; }
     if (!res || !res.job_id) { toast('后端没有返回任务号', 'err'); return; }
     await trackJob(res.job_id, { kind: 'process', label: '一键处理', pageIds: ids === 'all' ? null : ids });
@@ -1585,7 +1586,10 @@
       var ids = checkedIds();
       var n = ids.length || S.pages.length;
       var text = ids.length ? ('处理勾选的 ' + n + ' 页？') : ('处理全部 ' + n + ' 页？整页分割约 7–13 秒/页。');
-      confirmDialog('一键处理', text, function () { startProcess(ids.length ? ids : 'all'); });
+      confirmDialog('一键处理', text, function () {
+        confirmDialog('重新分割确认', '已处理过的页会【重新分割并覆盖现有框】（含人工修改），继续？',
+          function () { startProcess(ids.length ? ids : 'all', { force: true }); });
+      });
     });
     $('#btnExport').addEventListener('click', openExport);
     var spSave = document.getElementById('btnSpSave');
@@ -1626,7 +1630,9 @@
 
     $('#btnProcessOne').addEventListener('click', function () {
       if (!S.pageId) { return; }
-      confirmDialog('处理本页', '对当前页跑分割？', function () { startProcess([S.pageId]); });
+      confirmDialog('处理本页',
+        '对当前页【重新分割】？会覆盖本页现有 ' + (S.boxes ? S.boxes.length : 0) + ' 个框（含人工修改）。',
+        function () { startProcess([S.pageId], { force: true }); });
     });
     $('#btnExportOne').addEventListener('click', openExport);
     $('#btnReload').addEventListener('click', reloadCurrentPage);
