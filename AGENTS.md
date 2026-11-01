@@ -246,3 +246,10 @@
 - API：GET /api/segment-params（返回默认值+当前生效值+文件路径）、PUT（写 %LOCALAPPDATA%/yi-segment/calibration/segment_params.json，类型按 Params 字段强转）、POST /api/segment-params/reset（删文件恢复默认）。
 - 保存后 pipeline.calibration_params() 立即读到 → 下次「一键处理 / 处理本页」生效，无需重启。
 - 验证（打包 exe + CDP）：打开设置后 cut_base=0.9、tall_split_ratio=1.45、提示「当前参数已加载」；API 保存/复位实测通过。
+## glyphmgr 空界面修复（2026-11-01 下午）
+- 现象：双击 YiGlyphMgr.exe 后界面显示 0 页/0 类，因为旧逻辑只在 exe 同级与上一级找 out/；
+  实际 out 在项目根（exe 在 dist/YiGlyphMgr/，中间隔了两层）→ 找不到。
+- 修法：①自动检测改为「从 exe 目录和当前目录各向上找 5 层」的 out，且必须含 *\index.csv 才算；
+  ②把选中的目录记到 %LOCALAPPDATA%/yi-segment/glyphmgr.json，下次直接用它；③界面顶部显示当前目录；
+  ④找不到时显示输入条：粘贴 out 路径 →「加载这个目录」；新增 API GET/POST /api/root（POST 会重新加载并持久化）。
+- 验证（exe 内）：从 dist/YiGlyphMgr 启动自动找到仓库 out（8 页/4379 图/2160 类）；POST /api/root 切换后 summary 同步，glyphmgr.json 记录路径。

@@ -37,12 +37,18 @@
 <header>
   <b>彝文字库管理</b>
   <span id="stats" class="n"></span>
+  <span id="rootText" class="n" style="opacity:.75"></span>
   <span class="sp"></span>
   <label>最少同类 <input id="minN" type="number" value="1" min="1" style="width:56px"> 个</label>
   <button id="btnReload">刷新分类</button>
   <button id="btnUndo">撤销上一步</button>
   <span id="msg"></span>
 </header>
+<div id="rootBar" style="display:none;align-items:center;gap:8px;padding:6px 14px;background:#1a2330;border-bottom:1px solid #26303d;">
+  <span>没有找到 out 文件夹：</span>
+  <input id="rootInput" type="text" placeholder="把 out 文件夹路径粘到这里，例如 D:\项目\out" style="flex:1;max-width:720px;padding:4px 8px;background:#0e141b;border:1px solid #334152;color:#d7e2ee;border-radius:6px;">
+  <button id="btnApplyRoot">加载这个目录</button>
+</div>
 <main>
   <div id="classes"></div>
   <div id="right">
@@ -86,7 +92,21 @@ function msg(t) { document.getElementById('msg').textContent = t || ''; }
 async function refreshStats() {
   var s = await api('/api/summary');
   document.getElementById('stats').textContent = '共 ' + s.glyphs + ' 个切图 · ' + s.classes + ' 类 · ' + s.pages.length + ' 页';
+  var rt = document.getElementById('rootText');
+  if (rt) { rt.textContent = '目录：' + (s.root || ''); }
+  var bar = document.getElementById('rootBar');
+  if (bar) { bar.style.display = (s.pages && s.pages.length) ? 'none' : 'flex'; }
   return s;
+}
+
+async function applyRoot() {
+  var p = document.getElementById('rootInput').value.trim();
+  if (!p) { msg('先填 out 文件夹路径'); return; }
+  try {
+    var r = await api('/api/root', { path: p });
+    msg('已加载 ' + r.pages + ' 页');
+    await refreshStats(); await loadClasses();
+  } catch (e) { msg('加载失败：' + e.message); }
 }
 
 async function loadClasses() {
@@ -195,6 +215,7 @@ document.getElementById('btnUndo').onclick = async function () {
   } catch (e) { msg('撤销失败：' + e.message); }
 };
 
+document.getElementById('btnApplyRoot').onclick = applyRoot;
 document.getElementById('btnReload').onclick = async function () {
   try {
     await api('/api/build', {});
