@@ -302,3 +302,10 @@
 - ML 聚类：scripts/ml_cluster.py（48x48 ink → 随机 SVD PCA48 → 余弦距离 → scipy average-linkage → 按目标类数选阈值）。
   --target 900 → base 827 类（阈值 0.42），叠加手动后 440 类；耗时约 1 秒（BLAS 矩阵乘 + nn-chain）。
   更粗/更细随时重跑：python scripts/ml_cluster.py --target 600 / 1200。注意：重建 base 不会丢 v2 手动编辑。
+## out 切图必须原图裁切（2026-11-01 17:00）
+- 用户要求：out 的图有分辨率要求，必须从**原始 TIF 原分辨率**裁切（不能缩放/不能从预览图裁）。
+- 核查：抽样 5 张 × 4 页，tile 与 TIF 的 [x0:x1,y0:y1] 裁剪 **0 像素差**；各页 pad 比例不同（0.04/0.05/0.10），但都是原图像素裁切。
+- 新增 scripts/rebuild_out_from_original.py：按 index.csv 的 gx0..gy1 + 该页原有 pad 比例，从 scans/<页>.tif 重新裁切全部 tile（RGB），重写 index.csv/sheet.png，改前备份到 out/.glyphmgr/rebuild/<页>/<时间>/。
+  实测 11 页 6024 tile：重建后 pad 比例与备份**完全一致**（0.100/0.050/0.040…），抽样校验 0/5 不一致。
+- glyphmgr Page.pad_policy()：重导出/切分/合并时沿用该页**原有 pad 比例**，不再一律 0.1（避免操作后图像留白/尺度变化）。
+- 注意：out/彝族扫描3-0003_right_46a5 是导出撞名产生的**重复页**（无自己的 TIF，marker 指向 0003_right.tif），已按同源 TIF 重建；是否删除由用户决定。

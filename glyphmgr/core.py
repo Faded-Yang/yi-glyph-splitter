@@ -215,6 +215,24 @@ class Page:
     def tile_path(self, filename):
         return os.path.join(self.dir, filename)
 
+    def pad_policy(self):
+        """Median export padding ratio of this page (None when no rows)."""
+        pads = []
+        for r in self.rows:
+            try:
+                pad = float(r.get("pad") or 0)
+                gw = float(r.get("gx1") or 0) - float(r.get("gx0") or 0)
+                gh = float(r.get("gy1") or 0) - float(r.get("gy0") or 0)
+            except (TypeError, ValueError):
+                continue
+            side = max(gw, gh)
+            if pad > 0 and side > 0:
+                pads.append(pad / side)
+        if not pads:
+            return None
+        pads.sort()
+        return pads[len(pads) // 2]
+
     def glyph_boxes(self):
         """Tight glyph boxes (gx0..gy1), i.e. WITHOUT the export padding."""
         out = []
@@ -255,7 +273,9 @@ class Page:
             gx0 = max(0, min(w_img - 1, gx0)); gx1 = max(gx0 + 1, min(w_img, gx1))
             gy0 = max(0, min(h_img - 1, gy0)); gy1 = max(gy0 + 1, min(h_img, gy1))
             gw, gh = gx1 - gx0, gy1 - gy0
-            pad = max(MIN_PAD, int(round(PAD_RATIO * max(gw, gh))))
+            policy = self.pad_policy()
+            ratio = PAD_RATIO if policy is None else policy
+            pad = max(MIN_PAD, int(round(ratio * max(gw, gh))))
             x0 = max(0, gx0 - pad); y0 = max(0, gy0 - pad)
             x1 = min(w_img, gx1 + pad); y1 = min(h_img, gy1 + pad)
             tile = rgb[y0:y1, x0:x1]
