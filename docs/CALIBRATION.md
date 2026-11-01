@@ -1,3 +1,10 @@
 # 从人工修正学习分割参数
 
-见 README「素材与从人工修正中学习」一节；脚本：scripts/learn_from_correction.py。
+单页：
+
+    python scripts/learn_from_correction.py --pair "out/<页>:scans/<页>.tif"
+
+多页（推荐，泛化更好）：重复 --pair 即可。
+
+学习结果写到 data/calibration/segment_params.json，并复制到 %LOCALAPPDATA%\yi-segment\calibration\；
+pipeline 与 CLI 会自动读取。删除该文件即恢复默认参数。
