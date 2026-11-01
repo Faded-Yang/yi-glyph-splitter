@@ -9,6 +9,11 @@ from . import paths
 
 DEFAULT_EXPORT = {
     "pad_ratio": 0.10,
+    "prefix": "",
+    "start": 1,
+    "digits": 0,
+    "sheet": True,
+    "quality": 95,
     "min_pad": 6,
     "order": "visual",
     "fmt": "png",

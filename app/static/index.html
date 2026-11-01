@@ -197,6 +197,15 @@
       <label class="field">编号顺序<select id="setOrder"><option value="visual">visual（视觉顺序）</option><option value="reading">reading（阅读顺序）</option><option value="id">id（按框 id）</option></select></label>
       <label class="field">图片格式<select id="setFmt"><option value="png">png</option><option value="jpg">jpg</option><option value="webp">webp</option></select></label>
     </div>
+    <div class="field-row">
+      <label class="field">文件名前缀<input id="setPrefix" type="text" placeholder="可空"></label>
+      <label class="field">起始编号<input id="setStart" type="number" min="0" max="999999" step="1" value="1"></label>
+      <label class="field">编号位数<input id="setDigits" type="number" min="0" max="8" step="1" value="0" title="0 = 自动"></label>
+    </div>
+    <div class="field-row">
+      <label class="check"><input type="checkbox" id="setSheet" checked> 生成拼版图 sheet.png</label>
+      <label class="field">JPG 质量<input id="setQuality" type="number" min="30" max="100" step="1" value="95"></label>
+    </div>
 
     <div class="group-title">项目</div>
     <label class="field">项目目录<input id="setProjectPath" type="text" placeholder="C:\项目目录"></label>
@@ -235,6 +244,15 @@
     <div class="field-row">
       <label class="field">编号顺序<select id="exOrder"><option value="visual">visual</option><option value="reading">reading</option><option value="id">id</option></select></label>
       <label class="field">图片格式<select id="exFmt"><option value="png">png</option><option value="jpg">jpg</option><option value="webp">webp</option></select></label>
+    </div>
+    <div class="field-row">
+      <label class="field">文件名前缀<input id="exPrefix" type="text" placeholder="可空，例如 yi_"></label>
+      <label class="field">起始编号<input id="exStart" type="number" min="0" max="999999" step="1" value="1"></label>
+      <label class="field">编号位数<input id="exDigits" type="number" min="0" max="8" step="1" value="0" title="0 = 自动（至少 3 位）"></label>
+    </div>
+    <div class="field-row">
+      <label class="check"><input type="checkbox" id="exSheet" checked> 生成拼版图 sheet.png</label>
+      <label class="field">JPG 质量<input id="exQuality" type="number" min="30" max="100" step="1" value="95"></label>
     </div>
     <label class="field">导出范围<select id="exScope"><option value="current">当前页</option><option value="checked">勾选的页</option><option value="all">全部页</option></select></label>
   </div>

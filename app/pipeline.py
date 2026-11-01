@@ -340,6 +340,17 @@ def run_refcheck(store, pid, progress_cb=None, cancel_cb=None) -> dict:
     return result
 
 
+def page_is_edited(store, pid: str) -> bool:
+    """True when the page's boxes differ from the automatic segmentation (i.e. hand-edited)."""
+    try:
+        boxes = store.boxes(pid)
+        page = store.load_page_json(pid)
+        auto_n = len(page.get("glyphs") or [])
+        return bool(auto_n) and len(boxes) != auto_n
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def harvest_confirmed(store, pid: str, gray=None) -> int:
     """Add the page's human-confirmed boxes (review=1) to the user glyph bank.
 
@@ -386,9 +397,8 @@ def harvest_confirmed(store, pid: str, gray=None) -> int:
         glyphs.append({"ink48": ink, "x0": x0, "y0": y0, "x1": x1, "y1": y1, "label": lab,
                        "review": int(b.get("review") or 0),
                        "level": str(levels.get(b.get("id")) or "")})
-    before = userbank.stats().get("n", 0)
-    after = userbank.add_glyphs(glyphs, page=page_name).get("n", 0)
-    return max(0, after - before)
+    res = userbank.add_glyphs(glyphs, page=page_name)
+    return int(res.get("added") or 0)
 
 
 # --------------------------------------------------- per-box reference scoring
@@ -757,7 +767,9 @@ def page_dict_for_export(store, pid, boxes) -> dict:
 
 
 def export_page(store, pid, out_dir=None, *, pad_ratio: float = 0.10, min_pad: int = 6,
-                order: str = "visual", fmt: str = "png", progress_cb=None,
+                order: str = "visual", fmt: str = "png", prefix: str = "",
+                start: int = 1, digits: int = 0, sheet: bool = True, quality: int = 95,
+                progress_cb=None,
                 cancel_cb=None) -> dict:
     """Write <out>/<page name>/{0001.png..., index.csv, sheet.png}."""
     entry = _require_page(store, pid)
@@ -811,12 +823,16 @@ def export_page(store, pid, out_dir=None, *, pad_ratio: float = 0.10, min_pad: i
         _cb(progress_cb, 0.35, "裁切 %d 个框" % len(boxes))
         t2 = time.time()
         records = E.export_tiles(rgb, page, str(page_out), pad_ratio=pad_ratio,
-                                 min_pad=min_pad, order=order, fmt=fmt)
+                                 min_pad=min_pad, order=order, fmt=fmt,
+                                 prefix=prefix, start=start, digits=digits,
+                                 sheet=sheet, quality=quality)
         export_seconds = time.time() - t2
         check_cancel(cancel_cb)
         _cb(progress_cb, 0.9, "校验导出结果")
+        # 文件名前缀/起始编号可自定义，所以按「记录里的文件名」校验，不用固定正则
+        wanted = {str(r.get("filename")) for r in records if r.get("filename")}
         tile_files = [p.name for p in page_out.iterdir()
-                      if p.is_file() and TILE_RE.match(p.name)]
+                      if p.is_file() and (p.name in wanted if wanted else TILE_RE.match(p.name))]
         index_csv = page_out / "index.csv"
         csv_rows = 0
         if index_csv.is_file():

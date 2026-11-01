@@ -264,7 +264,8 @@ def export_tiles(rgb, page: dict, out_dir: str,
                  prefix: str = "", order: str = "reading", fmt: str = "png",
                  *, sheet: bool = True, sheet_cols: int = SHEET_COLS,
                  cell: int = SHEET_CELL, sheet_name: str = "sheet.png",
-                 sheet_header: str | None = None) -> list:
+                 sheet_header: str | None = None,
+                 start: int = 1, digits: int = 0, quality: int = 95) -> list:
     """Crop every glyph of page out of rgb and write tiles + index + sheet.
 
     Parameters
@@ -309,11 +310,15 @@ def export_tiles(rgb, page: dict, out_dir: str,
 
     os.makedirs(out_dir, exist_ok=True)
     n = len(ordered)
-    ndigits = max(3, len(str(max(1, n))))
+    start = max(0, int(start or 1))
+    last_no = start + max(0, n - 1)
+    ndigits = max(3, len(str(max(1, last_no))))
+    if digits and int(digits) > 0:
+        ndigits = max(int(digits), len(str(max(1, last_no))))
 
     records = []
     thumbs = []
-    for i, g in enumerate(ordered, start=1):
+    for i, g in enumerate(ordered, start=start):
         box = _glyph_box(g)
         if box is None:
             continue
@@ -337,7 +342,7 @@ def export_tiles(rgb, page: dict, out_dir: str,
             raise RuntimeError("tile %s: PIL size %s != box %s"
                                % (filename, img.size, (x1 - x0, y1 - y0)))
         if fmt in ("jpg", "jpeg"):
-            img.convert("RGB").save(path, quality=95, subsampling=0)
+            img.convert("RGB").save(path, quality=max(30, min(100, int(quality or 95))), subsampling=0)
         else:
             img.save(path)
 

@@ -25,6 +25,13 @@ import numpy as np
 from PIL import Image
 
 
+def load_rgb(fp):
+    """Read an image as RGB uint8 (the exporter writes colour tiles)."""
+    Image.MAX_IMAGE_PIXELS = None
+    with Image.open(fp) as im:
+        return np.ascontiguousarray(np.asarray(im.convert("RGB"), dtype=np.uint8))
+
+
 def load_gray(fp):
     """Read an image as uint8 grayscale (PIL handles TIFF/PNG reliably here)."""
     Image.MAX_IMAGE_PIXELS = None
@@ -115,6 +122,7 @@ class Page:
             with open(self.csv_path, encoding="utf-8-sig", newline="") as f:
                 self.rows = list(csv.DictReader(f))
         self._gray = None
+        self._rgb = None
 
     # -- scan
     def tif_path(self):
@@ -134,31 +142,53 @@ class Page:
         self._gray = load_gray(fp)
         return self._gray
 
+    def rgb(self):
+        if self._rgb is not None:
+            return self._rgb
+        fp = self.tif_path()
+        if not fp:
+            raise RuntimeError("找不到源 TIF：%s" % self.name)
+        self._rgb = load_rgb(fp)
+        return self._rgb
+
     def tile_path(self, filename):
         return os.path.join(self.dir, filename)
 
     def glyph_boxes(self):
+        """Tight glyph boxes (gx0..gy1), i.e. WITHOUT the export padding."""
+        out = []
+        for r in self.rows:
+            if r.get("gx0") not in (None, ""):
+                out.append((int(float(r["gx0"])), int(float(r["gy0"])),
+                            int(float(r["gx1"])), int(float(r["gy1"]))))
+            else:
+                out.append((int(float(r["x0"])), int(float(r["y0"])),
+                            int(float(r["x1"])), int(float(r["y1"]))))
+        return out
+
+    def tile_rects(self):
         return [(int(float(r["x0"])), int(float(r["y0"])), int(float(r["x1"])), int(float(r["y1"])))
                 for r in self.rows]
 
     # -- export
     def reexport(self, boxes, backup=True):
-        """Rewrite this page's tiles + csv from the given glyph boxes (page coords)."""
-        gray = self.gray()
+        """Rewrite this page's tiles + csv from the given TIGHT glyph boxes."""
+        import re as _re
+        rgb = self.rgb()
         if backup:
             bak = os.path.join(self.root, ".glyphmgr", "backup", self.name, time.strftime("%Y%m%d-%H%M%S"))
             os.makedirs(bak, exist_ok=True)
             for fn in os.listdir(self.dir):
                 if fn.lower().endswith(".png") or fn == "index.csv":
                     shutil.copy2(os.path.join(self.dir, fn), os.path.join(bak, fn))
-        # clean old tiles
+        # clean only the numeric tiles + the contact sheet (keep marker / other files)
         for fn in os.listdir(self.dir):
-            if fn.lower().endswith(".png"):
+            if _re.match(r"^\d+\.(png|jpg|webp)$", fn, _re.I) or fn == "sheet.png":
                 try:
                     os.remove(os.path.join(self.dir, fn))
                 except OSError:
                     pass
-        h_img, w_img = gray.shape[:2]
+        h_img, w_img = rgb.shape[:2]
         rows = []
         for i, (gx0, gy0, gx1, gy1) in enumerate(boxes, start=1):
             gx0 = max(0, min(w_img - 1, gx0)); gx1 = max(gx0 + 1, min(w_img, gx1))
@@ -167,7 +197,7 @@ class Page:
             pad = max(MIN_PAD, int(round(PAD_RATIO * max(gw, gh))))
             x0 = max(0, gx0 - pad); y0 = max(0, gy0 - pad)
             x1 = min(w_img, gx1 + pad); y1 = min(h_img, gy1 + pad)
-            tile = gray[y0:y1, x0:x1]
+            tile = rgb[y0:y1, x0:x1]
             fn = "%03d.png" % i
             Image.fromarray(np.ascontiguousarray(tile)).save(os.path.join(self.dir, fn))
             rows.append({"filename": fn, "id": i, "col": -1, "row": -1,
@@ -183,8 +213,37 @@ class Page:
             for r in rows:
                 wr.writerow(r)
         self.rows = rows
-        self._gray = gray
+        self._gray = None
+        self._rgb = rgb
+        try:
+            self.make_sheet(rows)
+        except Exception:
+            pass
         return len(rows)
+
+    def make_sheet(self, rows=None):
+        """Rebuild sheet.png: a simple contact sheet of the tiles (13 per row)."""
+        rows = rows or self.rows
+        if not rows:
+            return
+        cols = 13
+        slot_w, slot_h, max_side, gap = 165, 175, 105, 6
+        n = len(rows)
+        nrows = (n + cols - 1) // cols
+        sheet = Image.new("RGB", (cols * slot_w, nrows * slot_h), (255, 255, 255))
+        for i, r in enumerate(rows):
+            fp = os.path.join(self.dir, r["filename"])
+            if not os.path.isfile(fp):
+                continue
+            try:
+                im = Image.open(fp).convert("RGB")
+            except Exception:
+                continue
+            im.thumbnail((max_side, max_side), Image.LANCZOS)
+            cx = (i % cols) * slot_w + (slot_w - im.width) // 2
+            cy = (i // cols) * slot_h + gap + (max_side - im.height) // 2
+            sheet.paste(im, (cx, cy))
+        sheet.save(os.path.join(self.dir, "sheet.png"))
 
 
 # ------------------------------------------------------------------ library
@@ -198,7 +257,10 @@ class Library:
             d = os.path.join(self.root, name)
             if os.path.isdir(d) and os.path.isfile(os.path.join(d, "index.csv")):
                 self.pages[name] = Page(self.root, name)
-        self.classes = _read_json(os.path.join(self.state_dir, "classes.json"), None)
+        loaded = _read_json(os.path.join(self.state_dir, "classes.json"), None)
+        if isinstance(loaded, dict):
+            loaded = loaded.get("classes") or []
+        self.classes = loaded if isinstance(loaded, list) else None
 
     # -- features + classes
     def build_classes(self, force=False, sim=CLUSTER_SIM):

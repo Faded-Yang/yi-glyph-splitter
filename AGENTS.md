@@ -221,3 +221,21 @@
 - 根因（多条叠加）：①画布只监听自己的 pointermove/up，指针被系统或窗口外抢走后收不到后续事件；②WebView 对鼠标发 pointercancel 时旧代码把它当松手直接结束拖动；③拖动拿的是 box 对象引用，期间任何 view.setData 换成新数组就会改到孤儿对象；④抓在框控制点上时若附近有分列线，会先命中分列线（变成拖列，框看起来卡住）。
 - 修法：window 级 pointermove/pointerup 兜底；lostpointercapture 后重新 setPointerCapture；pointercancel(pointerType=mouse) 不再结束拖动；_dragBox() 按 box id 每次重新取框；控制点命中优先于分列线；pointerdown preventDefault + CSS #cv{touch-action:none;user-select:none}。
 - 验证（打包 exe 内 CDP）：拖动 5 步 x 120→550，中途注入 pointercancel 后继续 658→1088，移出画布仍跟随，松手 mode=idle，无 JS 异常。
+## 修复：out/彝族扫描3-0002_right 被改成黑白且框变大（2026-11-01 下午）
+- 原因（我在做 glyphmgr 测试时引入）：①重导出用 `Image.fromarray(灰度)` 保存 → 变成 8bit 灰度（原图是 24bpp RGB）；
+  ②`Page.glyph_boxes()` 读的是 csv 的 x0..y1（**已经含 10% 留白的外框**），重导出又加了一次 pad → 框/图整体放大约 2 倍。
+- 修法：`glyph_boxes()` 改用 gx0..gy1（紧框），新增 `tile_rects()` 供需要时使用；`reexport` 改读**彩色原图**（PIL RGB）裁剪保存，pad 只加一次；
+  重新生成 sheet.png；清理旧 tile 只按 `^\d+\.(png|jpg|webp)$`，不再误删 sheet.png。
+- 恢复：从 `out/.glyphmgr/backup/彝族扫描3-0002_right/20261101-042724/` 拷回原始彩色 tiles + index.csv + sheet.png（551 张，24bpp RGB，219x214）。
+- 验证：未动过的 0004_left 用新公式重导出到临时目录，抽样 7 张与原图 **0 像素差**、RGB、sheet 正常；0002_right 已恢复为原样。
+
+## 一键切图参数（2026-11-01）
+- 弹框新增：**文件名前缀 / 起始编号 / 编号位数 / 是否生成 sheet.png / JPG 质量**（原有 留白比例、最小留白、编号顺序、图片格式、导出范围）。
+- 默认值进设置（config.export + 设置抽屉），导出时用对话框里的值；`prefix=yi_, start=10, digits=4` 实测输出 `yi_0010.png ...`，551 张、csv 551 行。
+- 导出自校验改成按“实际写出的文件名”核对（支持前缀），不再依赖 `^\d+\.png$`。
+
+## glyphmgr 独立 exe（2026-11-01）
+- 入口 `glyphmgr/app_entry.py`（自动找 out、自动选端口、自动开浏览器）；打包 spec `packaging/glyphmgr.spec` → `dist/YiGlyphMgr/YiGlyphMgr.exe`（6.6MB + runtime/）。
+- 踩坑：windowed exe 里 uvicorn 默认日志格式化会崩（`NoneType.isatty`）→ devnull 兜底 + `log_config=None`；
+  另外 classes.json 是 `{built,sim,pages,classes}` 结构，加载时必须取 `.classes`，否则 summary 把 dict 当列表（classes=4）并在 /api/classes 500。
+- 实测：exe 启动后 summary 8 页/4379 图/2160 类，/api/classes 200，/api/class/36 返回 44 个成员。

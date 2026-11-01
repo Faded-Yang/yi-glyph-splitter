@@ -257,7 +257,9 @@ def _process_job(st: ProjectStore, ids: list, force: bool):
 
 
 def _export_job(st: ProjectStore, ids: list, out: str, cfg: "config_mod.AppConfig",
-                pad_ratio: float, min_pad: int, order: str, fmt: str):
+                pad_ratio: float, min_pad: int, order: str, fmt: str,
+                prefix: str = "", start: int = 1, digits: int = 0,
+                sheet: bool = True, quality: int = 95):
     total = max(1, len(ids))
 
     def fn(job):
@@ -274,7 +276,8 @@ def _export_job(st: ProjectStore, ids: list, out: str, cfg: "config_mod.AppConfi
             try:
                 res = pipeline.export_page(
                     st, pid, out, pad_ratio=pad_ratio, min_pad=min_pad,
-                    order=order, fmt=fmt, progress_cb=prog, cancel_cb=job.is_canceled)
+                    order=order, fmt=fmt, prefix=prefix, start=start, digits=digits,
+                    sheet=sheet, quality=quality, progress_cb=prog, cancel_cb=job.is_canceled)
                 ok += 1
                 job.add_result({"pid": pid, "ok": True, "name": res["name"],
                                 "out": res["out"], "n_tiles": res["n_tiles"],
@@ -687,6 +690,20 @@ def create_app(project_dir: str = "") -> FastAPI:
             min_pad = max(0, min(200, int(data.get("min_pad", defaults.get("min_pad", 6)))))
         except (TypeError, ValueError):
             min_pad = int(defaults.get("min_pad", 6))
+        prefix = str(data.get("prefix") if data.get("prefix") is not None else defaults.get("prefix") or "")
+        try:
+            start = max(0, min(999999, int(data.get("start", defaults.get("start", 1)))))
+        except (TypeError, ValueError):
+            start = 1
+        try:
+            digits = max(0, min(8, int(data.get("digits", defaults.get("digits", 0)))))
+        except (TypeError, ValueError):
+            digits = 0
+        sheet = bool(data.get("sheet", defaults.get("sheet", True)))
+        try:
+            quality = max(30, min(100, int(data.get("quality", defaults.get("quality", 95)))))
+        except (TypeError, ValueError):
+            quality = 95
         order = str(data.get("order") or defaults.get("order") or "visual").lower()
         if order not in pipeline.ORDER_VALUES:
             order = "visual"
@@ -694,12 +711,17 @@ def create_app(project_dir: str = "") -> FastAPI:
         if fmt not in pipeline.FMT_VALUES:
             fmt = "png"
         job_id = request.app.state.jobs.submit(
-            "export", _export_job(store, ids, out, cfg, pad_ratio, min_pad, order, fmt),
+            "export", _export_job(store, ids, out, cfg, pad_ratio, min_pad, order, fmt,
+                                  prefix=prefix, start=start, digits=digits,
+                                  sheet=sheet, quality=quality),
             total=len(ids), message="排队中：导出 %d 页" % len(ids),
             meta={"ids": ids, "out": out, "order": order, "fmt": fmt,
-                  "pad_ratio": pad_ratio, "min_pad": min_pad})
+                  "pad_ratio": pad_ratio, "min_pad": min_pad, "prefix": prefix,
+                  "start": start, "digits": digits, "sheet": sheet, "quality": quality})
         return {"job_id": job_id, "ids": ids, "total": len(ids), "out": out,
-                "order": order, "fmt": fmt, "pad_ratio": pad_ratio, "min_pad": min_pad}
+                "order": order, "fmt": fmt, "pad_ratio": pad_ratio, "min_pad": min_pad,
+                "prefix": prefix, "start": start, "digits": digits, "sheet": sheet,
+                "quality": quality}
 
     @app.post("/api/pages/{pid}/export")
     def api_export_page(pid: str, request: Request, body: Any = Body(default_factory=dict)):

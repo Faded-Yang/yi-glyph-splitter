@@ -1206,6 +1206,11 @@
     $('#setMinPad').value = def.min_pad != null ? def.min_pad : 6;
     $('#setOrder').value = def.order || 'visual';
     $('#setFmt').value = def.fmt || 'png';
+    $('#setPrefix').value = def.prefix || '';
+    $('#setStart').value = def.start != null ? def.start : 1;
+    $('#setDigits').value = def.digits != null ? def.digits : 0;
+    $('#setSheet').checked = def.sheet !== false;
+    $('#setQuality').value = def.quality != null ? def.quality : 95;
     $('#setProjectPath').value = (S.project && S.project.path) || '';
     loadUserbank();
     var ab = document.getElementById('aboutBuild');
@@ -1221,7 +1226,12 @@
       pad_ratio: num($('#setPad').value, 0.1),
       min_pad: Math.round(num($('#setMinPad').value, 6)),
       order: $('#setOrder').value,
-      fmt: $('#setFmt').value
+      fmt: $('#setFmt').value,
+      prefix: $('#setPrefix').value || '',
+      start: Math.round(num($('#setStart').value, 1)),
+      digits: Math.round(num($('#setDigits').value, 0)),
+      sheet: $('#setSheet').checked,
+      quality: Math.round(num($('#setQuality').value, 95))
     };
     try { await API.post('/api/settings', { defaults: defaults }); }
     catch (e) { toast('保存设置失败', 'err', e.message); return; }
@@ -1249,6 +1259,11 @@
     $('#exMin').value = def.min_pad != null ? def.min_pad : 6;
     $('#exOrder').value = def.order || 'visual';
     $('#exFmt').value = def.fmt || 'png';
+    $('#exPrefix').value = S.lastExportPrefix || def.prefix || '';
+    $('#exStart').value = def.start != null ? def.start : 1;
+    $('#exDigits').value = def.digits != null ? def.digits : 0;
+    $('#exSheet').checked = def.sheet !== false;
+    $('#exQuality').value = def.quality != null ? def.quality : 95;
     $('#exScope').value = 'current';
     showModal('#dlgExport');
   }
@@ -1266,8 +1281,14 @@
       pad_ratio: num($('#exPad').value, 0.1),
       min_pad: Math.round(num($('#exMin').value, 6)),
       order: $('#exOrder').value,
-      fmt: $('#exFmt').value
+      fmt: $('#exFmt').value,
+      prefix: ($('#exPrefix').value || '').trim(),
+      start: Math.round(num($('#exStart').value, 1)),
+      digits: Math.round(num($('#exDigits').value, 0)),
+      sheet: $('#exSheet').checked,
+      quality: Math.round(num($('#exQuality').value, 95))
     };
+    S.lastExportPrefix = opts.prefix;
     S.lastExportOut = opts.out;
     hideModal('#dlgExport');
     startExport(ids, opts);
