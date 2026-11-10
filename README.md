@@ -6,7 +6,7 @@
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10-3776ab?logo=python&logoColor=white)](requirements.txt)
 [![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?logo=windows)](docs/APP.md)
-[![release](https://img.shields.io/badge/release-v1.0.0-2ea44f)](../../releases/latest)
+[![release](https://img.shields.io/badge/release-v1.0.0-2ea44f)](https://github.com/Faded-Yang/yi-glyph-splitter/releases/latest)
 [![vision](https://img.shields.io/badge/vision-OpenCV%20%2B%20numpy-5c3ee8?logo=opencv&logoColor=white)](docs/SPEC.md)
 
 > 中文手写彝文（诺苏文）竖排扫描件 → 一字一图的切图数据集。
@@ -36,7 +36,7 @@
 
 ### 方式 A：下载安装包（推荐）
 
-到 [Releases](../../releases/latest) 下载 **YiGlyphSplit-1.0.0-Setup.exe**，双击安装（中文向导、免管理员，
+到 [Releases](https://github.com/Faded-Yang/yi-glyph-splitter/releases/latest) 下载 **YiGlyphSplit-1.0.0-Setup.exe**，双击安装（中文向导、免管理员，
 默认装到 %LOCALAPPDATA%\\Programs\\YiGlyphSplit）。安装包约 78 MB，装完约 290 MB（自带 Python 运行时）。
 
 ### 方式 B：源码运行
