@@ -1,296 +1,143 @@
 # 彝文古籍切字工具 · Yi Glyph Splitter
 
-> **项目状态：已终止（2026-11-02）。** 成果清单、关键指标、本地清理与重建方式见 [docs/PROJECT-ENDED.md](docs/PROJECT-ENDED.md)。
+**把整页扫描的彝文古籍切成「一字一图」，并提供复核界面、规范字校验、字库管理与批量 CLI。**
 
-把整页扫描的彝文古籍（竖排、右起）切成**一字一图**，并提供人工复核界面、离线的「规范字校验」
-（对照《规范彝文单字图形识别手册》字库打分）以及可批量跑的 CLI。
+[![status](https://img.shields.io/badge/status-archived%202026--11--02-6e6e6e)](docs/PROJECT-ENDED.md)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.10-3776ab?logo=python&logoColor=white)](requirements.txt)
+[![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4?logo=windows)](docs/APP.md)
+[![release](https://img.shields.io/badge/release-v1.0.0-2ea44f)](../../releases/latest)
+[![vision](https://img.shields.io/badge/vision-OpenCV%20%2B%20numpy-5c3ee8?logo=opencv&logoColor=white)](docs/SPEC.md)
 
-![界面](samples/ui_main.svg)
+> 中文手写彝文（诺苏文）竖排扫描件 → 一字一图的切图数据集。
+> 纯 OpenCV + numpy/scipy，无 torch / 无 GPU 依赖；桌面端 FastAPI + 原生 JS + WebView2。
+> 实测口径：**6 页手工框评测 mean F1 0.8768**，10 页实战切图 6024 张。
 
-选中某个字框时，右栏给出该框的 3× 细节图（含上下邻字上下文）、规范字相似度与最像的 3 个标准字形：
+![主界面：整页切字 + 人工复核](docs/images/screenshot-main.png)
 
-![对照标准字形](samples/ui_selected.svg)
+## 亮点
 
-## 安装（推荐）
+| | |
+|---|---|
+| **整页自动切字** | 光照平场 → Sauvola 二值化 → 连通域筛选 → 列带检测 → 逐列 DP 切分 → 碎片合并 → 污渍剔除 → 收紧边界；一张 6354×11042 扫描约 **7 s**（32 核，全分辨率） |
+| **人工复核界面** | 拖框 / 改框 / 合并 / 切分 / 撤销；框自动编号（左→右、上→下，与导出顺序一致）；分列线可增删、可拖动；删除框不跳视角 |
+| **规范字校验** | 离线字库（《规范彝文单字图形识别手册》抽取的 **1428 类 / 5716 字**）逐框打分，标出可疑框与最像的标准字形 |
+| **字库管理程序** | 独立小工具 YiGlyphMgr：切图按字形聚类、人工归类 / 改名、原图分辨率重裁、批量导出 |
+| **批量 CLI** | 几百页扫描无人值守跑批：tools/yi_segment.py --input scans --out out/batch --jobs 4 --resume |
+| **参数可视化** | 「一键处理参数」面板实时调分割器旋钮（切分阈值、补切、污渍过滤、模板 DP…），保存即生效 |
 
-下载 `YiGlyphSplit-1.0.0-Setup.exe`，双击 → 下一步 → 完成（中文向导）。
+更多界面：
 
-- 默认装到 `%LOCALAPPDATA%\Programs\YiGlyphSplit`（**不需要管理员**；想装到别的盘，向导里改目录即可）
-- 开始菜单 / 桌面快捷方式、「设置 → 应用」里的卸载项都会建好
-- 安装目录长这样：
+| 3× 细节图 + 标准字形对照 | 一键处理参数 |
+|---|---|
+| ![细节](docs/images/screenshot-detail.png) | ![设置](docs/images/screenshot-settings.png) |
 
-      YiGlyphSplit\
-        YiGlyphSplit.exe      启动器（约 10 MB）
-        runtime\              Python 运行时 + OpenCV / numpy / scipy 等（约 286 MB，1860 多个文件）
-        README-install.txt
-        unins000.exe          卸载程序
+## 安装使用
 
-**为什么运行时要 280 多 MB？** 因为它自带完整的 Python 运行时和数值计算库（OpenCV、numpy、scipy、
-Pillow、FastAPI…），不需要用户先装 Python——这也是 exe 可以「双击就跑」的原因。真正的**启动器只有
-10 MB**，和网上那些几 MB 的单文件小工具比不了，但比之前的「单文件 119 MB exe」在启动速度上更快
-（不用每次解压到临时目录）。
+### 方式 A：下载安装包（推荐）
 
-## 便携版 / 从源码跑
+到 [Releases](../../releases/latest) 下载 **YiGlyphSplit-1.0.0-Setup.exe**，双击安装（中文向导、免管理员，
+默认装到 %LOCALAPPDATA%\\Programs\\YiGlyphSplit）。安装包约 78 MB，装完约 290 MB（自带 Python 运行时）。
 
-**A. 便携版**（不安装，绿色）：解压 `dist\YiGlyphSplit\` 整个文件夹，双击里面的 `YiGlyphSplit.exe`。
-换机器整体拷走即可。
+### 方式 B：源码运行
 
-**B. 源码运行界面**：
+~~~bash
+pip install fastapi uvicorn numpy opencv-python scipy pillow pywebview pythonnet
+python -m app.run --browser
+~~~
 
-    pip install fastapi uvicorn numpy opencv-python scipy pillow pywebview pythonnet
-    python -m app.run --project D:\work\book1
+### 方式 C：只要批量切图（无界面）
 
-**C. 只用命令行批量切图**（无界面，适合几百页）：
+~~~bash
+python tools/yi_segment.py --input "D:\\scans" --out out/batch --jobs 4 --resume
+~~~
 
-    python tools\yi_segment.py --input "D:\scans" --out out\batch --jobs 4 --resume
+## 输出格式
 
-见 `docs/CLI.md`。
+~~~
+out/<页名>/
+  001.png … NNN.png    单字裁切（原纸色、不二值化；原图分辨率 + 约 10% 留白）
+  index.csv            每个框的坐标：x0,y0,x1,y1,w,h,pad,gx0,gy0,gx1,gy1
+  sheet.png            拼版缩略图（13 列、白底、格下编号）
+  page.json            整页坐标（含列带信息）
+  overlay.png          整页叠加图（质检用）
+~~~
 
-## 素材与「从人工修正中学习」
+![拼版预览](docs/images/sheet-preview.jpg)
 
-### 原始扫描件
+## 准确率
 
-10 页原始 `.tif` 放在 `scans/`（每页约 200 MB，不进 git）。程序里「导入 TIF / 导入文件夹」直接选这里；
-换机器把整个 `scans/` 拷走即可。导出结果不要放这里（默认写 `<项目>/exports/`）。
+| 口径 | 结果 |
+|---|---|
+| 6 页手工框、全分辨率 | **mean F1 0.8768**（额外框 526 / 漏框 336） |
+| 1/4 图控制变量消融 | 0.8465 → 0.8789（补切 + 污渍 + 收边 + 碎片）→ **0.8821**（宽/高补切参数） |
+| 模板似然 DP（leave-one-page-out） | 0.8873 → 0.8902（主要收益：漏切 431 → 380） |
+| 与独立形态学算法（segment_alt）交叉验证 | 匹配框 IoU 中位 0.991 |
 
-### 让程序从你的手工修正里学
+评测脚本：scripts/bench_segmentation.py --from-out --scale 0.25；调参：scripts/tune_segmentation.py。
 
-把你在程序里改好的那一页导出（如 `out/彝族扫描3-0002_right/`，含 index.csv 与 001.png…），然后：
+## 工作流程
 
-    python scripts/learn_from_correction.py \
-        --export "out/彝族扫描3-0002_right" \
-        --tif "scans/彝族扫描3-0002_right.tif"
-
-脚本会：① 读你的人工框；② 跑一遍自动分割；③ 逐框 IoU 匹配、统计漏框/多框；④ 在 1/4 图上爬山调
-几个关键参数，再在全分辨率上专门调「两字粘连」的补切参数；⑤ 写 `data/calibration/segment_params.json`
-（同时复制到 `%LOCALAPPDATA%\yi-segment\calibration\`，装好的程序立刻生效）。
-
-多页学习（可一次给多页）：
-
-    python scripts/learn_from_correction.py \
-        --pair "out/彝族扫描3-0002_right:scans/彝族扫描3-0002_right.tif" \
-        --pair "out/彝族扫描3-0003_left:scans/彝族扫描3-0003_left.tif" \
-        --pair "out/彝族扫描3-0003_right:scans/彝族扫描3-0003_right.tif"
-
-单页实测：**F1 0.8385 → 0.8582**，召回率 **0.815 → 0.878**（自动找回 34 个你手工补的框）；
-IoU 中位保持 1.000（你保留的框本来就与自动框完全一致）。主要错误是「两字粘连成一个高框」→ 新增
-`tall_split` 补切（按行墨量谷底切，不要求有空隙）。学习参数在另一页（0003_left）上试跑：746 → 767 框，无异常膨胀。
-
-### 扫描黑边（装订阴影）
-
-扫描件左右边缘常有一条**纯黑条带**（扫描仪边缘 / 装订阴影）。旧版会把条带里的黑块当成字，
-整列挤满小框，真正的正文反而切不好（0003_left 上曾多出约 170 个假框）。现在分割前会先识别这种
-「贴边、成条、墨密度 > 0.35」的暗带并直接清掉（参数 `edge_clean / edge_band_frac / edge_band_ink`）。
-实测同样一页：条带内假框 **170+ → 0**，总框数从 746 降到 563（人工是 596）。
-
-下一次「一键处理」会自动带上这些参数；不满意就删掉 `data/calibration/segment_params.json` 恢复默认。
-
-## 流程（桌面程序）
-
-| 步骤 | 操作 | 说明 |
-|---|---|---|
-| 1 导入 | 导入 TIF（多选）/ 导入文件夹 | 首次让你选一个**项目目录**存放中间数据 |
-| 2 一键处理 | 选中页 → 一键处理 | 只在页面上**画框，不切图**；约 13 s/页 |
-| 3 规范字校验（离线，自动） | 无需操作：处理完自动跑 | 绿色实线 = 很符合规范字，红色实线 = 可疑，青色 = 一般；**颜色常驻**；约 1 s/页 |
-| 4 人工复核 | 拖拽 / 缩放 / 新增 / 删除 / 拆分 / 合并 / 确认 / 存疑 / 手动画色 | 改或新建一个框会**只重算这一框**；改动自动保存 |
-| 5 一键切图 | 选导出目录 | **按所有框**输出 `001.png…`、`index.csv`、`sheet.png`（可疑框也照切，只是颜色提示） |
-
-界面细节（都像专业软件）：
-
-- **左右侧栏可折叠、可拖宽**：顶栏两个侧栏图标 / `Ctrl+B`（左）、`Ctrl+Shift+B`（右）；
-  拖侧栏之间的分隔条改宽度，双击分隔条恢复默认。宽度和折叠状态会记住（localStorage）。
-- 颜色常驻：绿色（≥0.62 很标准）、青色（一般）、红色（<0.38 可疑）、绿/琥珀（人工确认/存疑）、自选色。
-  撤销 / 重做 / 保存 / 切页都不会掉色。
-- **分列线可调**：顶栏「分列线」或 设置 → 显示；蓝线可直接拖；**单击一条线选中（变黄）→ 右栏「− 删分列」删除**；「+ 加分列」按选中框（或最宽列）切一刀；「重置分列」按墨迹重算。
-  「重置分列」按墨迹重新自动分列。编号和导出顺序都跟着新分列走。
-  自动分列还会把「两列并成一列」的宽列带自动拆开（判据：宽 > 1.55×中位列宽，在带内墨量最深处切）。
-- **框编号动态重排**：每个框左上角显示编号（001、002…），规则与导出文件一致——最左列起、列内从上到下、一列一列排；增/删/拆分/合并后整个页面的编号立刻重排。整页适配视图下自动隐藏小框编号（放大到约 30px 以上才显示），避免糊成一片。
-- 新建框时指针带**十字延长参考虚线**（拖拽时还有锚点延长线），方便对齐字的边缘。
-
-快捷键：滚轮缩放 / 空格拖动平移 · `A` 新建框 · `Del` 删除 · `S` 以鼠标 y 拆分 · `M` / `Shift+M`
-与下/上一框合并 · `1`/`2`/`0` 确认/存疑/复位 · `←/→` 切换 · `Ctrl+Z` 撤销 · `Ctrl+Y` 重做 ·
-`Ctrl+B` 左栏 · `Ctrl+Shift+B` 右栏。
-
-> 删框后画布**不会**自动跳到下一个框（只换选中态），连续删框时视角不动。
-
-## 输出
-
-    <项目>/exports/<页名>/
-      001.png … NNN.png        单字裁切（原纸色，不二值化；位数按总数补零）
-      index.csv                filename,id,col,row,x0..y1,w,h,ink,pad + flags（confirmed/suspect/lowref）
-      sheet.png                拼版缩略图（13 列、白底、格下编号）
-
-CLI 还会额外写 `page.json`（全部坐标）与 `overlay.png`（整页叠加图）。
-
-## 算法（纯 OpenCV，无 torch 依赖）
-
-1. 匀光：大核 box blur 除法，压平纸色梯度（霉斑变中性灰）
-2. Sauvola 二值化（窗口 ≈ 1 个字宽）
-3. 连通域按 面积 / 暗度 / bbox 尺寸 过滤：去灰尘、背面透字、装订黑边、长横线框
-4. **横向分块**：整行空白走廊把页面切成 block，正文与顶部批注各自独立分列
-5. 列带：y 向闭运算 → x 投影**峰值 + 谷底**（污渍会让固定阈值把全页并成一列）
-6. 列内 **1-D 动态规划**切字：代价 = 8·(log(h/H))² + 每刀固定费 + 切口墨量；两遍用全页 H 中位数夹逼
-7. 断笔 / 点划按邻近关系并回本体
-8. 后处理：只在**真空带**补切「框里还有两个字」；再用 core_frac / ink_frac 剔除霉斑假框
-
-细节见 `docs/SPEC.md`；独立第二实现 `tools/yi_core/segment_alt.py`（纯形态学）用于交叉验证。
-
-## 规范字校验（离线字库）
-
-字库来自 **《规范彝文单字图形识别手册》**（129 页目录式 PDF）：抽出 **1428 个类别、5716 张标准字形**，
-归一化成 48×48 墨迹图，打包成 `data/glyphbank/bank.npz`（约 6 MB，随程序分发）。
-
-对每个框：裁墨迹 → 居中缩放到 48×48 → 与 5716 张标准字形算余弦相似度（16×16 粗筛 + 48×48 精选）。
-
-| 分数 | 含义 | 界面 |
-|---|---|---|
-| ≥ 0.62 | 与某个规范字高度吻合 | **绿色实线框** |
-| ≥ 0.50 | 与某个规范字明显吻合 | 青色实线框 |
-| 0.40–0.50 | 部分吻合 | 青色实线框（提示「一般」） |
-| < 0.38 | **很可能不是一个规范彝文字** | **红色实线框** + 「下一个低分」逐个核对 |
-
-实测本页 520 框：中位 0.49、23 个 ≥0.62、57 个低分。低分框目视核对基本就是「两字粘连」「只剩笔画碎片」
-或页面边角的霉斑残留。重建字库：`python scripts/build_glyphbank.py --pdf <手册.pdf>`。
-
-## 准确率（怎么核的）
-
-- 与独立算法交叉验证：匹配框 **IoU 中位 0.991**；分歧集中在「对方把相邻两字并成一个 tall 框」
-- 行距实测 ≈260–320 px、14 列 ×≈37 字 = 520 字，与原卷节奏吻合（不是过切）
-- 原分辨率逐列长条图（`qc/strips/`）人眼核对：一字一框、框贴字形
-
-## 自己打包
-
-    powershell -ExecutionPolicy Bypass -File packaging\build.ps1
-
-两步：PyInstaller（onedir，约 2–3 分钟）→ Inno Setup 打安装包（约 2–4 分钟，需先装
-`winget install JRSoftware.InnoSetup`）。产物：
-
-- `dist\YiGlyphSplit\` —— 绿色便携版（启动器 10 MB + `runtime\` 286 MB）
-- `dist\YiGlyphSplit-1.0.0-Setup.exe` —— 安装包（约 78 MB，lzma2 压缩后）
-
-只想要可运行目录、不打安装包：加 `-NoInstaller`。
+~~~
+扫描 TIF
+  │ ① 光照平场 + Sauvola 二值化
+  │ ② 连通域筛选（噪点 / 霉斑 / 透字）
+  │ ③ 列带检测（x 投影峰 + 谷底）
+  │ ④ 逐列一维 DP 切分（墨量谷 + 高度先验 + 模板似然）
+  │ ⑤ 粘连补切 / 碎片合并 / 污渍过滤 / 收紧边界
+  ▼
+框坐标  ──► 桌面复核界面（改框 / 合并 / 切分 / 分列 / 规范字校验）
+  │
+  ▼
+一键切图 ──► 原图分辨率裁剪 ──► 001.png + index.csv + sheet.png
+~~~
 
 ## 项目结构
 
-    app/                 FastAPI 后端 + 原生 JS 前端 + 入口 run.py
-      static/            index.html / app.js / canvas.js / style.css
-      yi_ref.py          规范字库匹配（离线打分）
-    tools/yi_core/       分割 / 导出 / 质检（可独立当库用）
-    data/glyphbank/      规范字库（bank.npz 或文本版 bank.npz.b64）
-    packaging/           app.spec / build.ps1 / installer.iss / 图标 / 安装说明
-    scripts/e2e_app.py   端到端验收（TestClient）
-    docs/                SPEC / CLI / 桌面说明 / 后端契约 / 先例调研
-    samples/             示例 tile / 拼版 / 界面截图
+~~~
+app/                 桌面程序（FastAPI 后端 + 原生 JS 前端 + WebView2 外壳）
+glyphmgr/            独立字库管理程序（聚类 / 人工分类 / 原图重裁）
+tools/yi_core/       分割算法核心（segment_v1、templatedp、export、qc、segment_alt）
+tools/yi_segment.py  批量 CLI 入口
+scripts/             评测、调参、字库构建、ML 聚类、原图重建等 16 个脚本
+data/glyphbank/      印刷规范字库（bank.npz.b64，1428 类）
+packaging/           PyInstaller spec + Inno Setup 安装包脚本
+docs/                算法契约、CLI、先例调研、界面 / 后端说明、项目结束报告
+samples/             界面与输出的静态样例
+~~~
 
-## 字库管理与 out 导入（2026-11-01）
+## 从源码打包
 
-### 主程序：导入 out 框
-顶栏「导入 out 框」→ 用 `out/<页>/index.csv` 里的 `gx0..gy1` 覆盖当前页的框，直接显示在画布上。
-可留空自动向上查找 out 目录，也可手动填 out 文件夹或 `out/<页名>` 路径；导入后即可切图/导出。
+~~~bash
+pip install pyinstaller
+python packaging/make_icon.py                     # 生成图标（无切图时用占位图）
+python -m PyInstaller packaging/app.spec          # onedir 程序
+"%LOCALAPPDATA%\\Programs\\Inno Setup 6\\ISCC.exe" packaging\\installer.iss   # 安装包
+python -m PyInstaller packaging/glyphmgr.spec     # 字库管理程序
+~~~
 
-### 独立字库管理程序（glyphmgr）
-```
-python -m glyphmgr.run --port 9400
-```
-浏览器打开 http://127.0.0.1:9400/ 。它把 8 页 4379 个切图按字形相似度自动分类（默认 0.64 → 2160 类），
-每类列出所有页 + 框号（前后关系一眼可见），并支持：
+## 文档
 
-- **切开这个框 / 切开整类**：拖比例滑杆，横切（上下两字）或竖切（左右两字）；「整类」会把同类所有框按同样比例切；
-- **与上一/下一框合并**：把被误分成两个框的一个字并回去；
-- **撤销上一步**：恢复到操作前的框集；
-- 所有动作**直接改写 out 里对应的 PNG 与 index.csv**（重新裁切 → 重新编号 001..N），
-  改动前自动备份到 `out/.glyphmgr/backup/<页>/<时间>/`。
-
-### 模板似然 DP（分割器内部）
-`tools/yi_core/templatedp.py`：用 8 页手工字形聚成 64 个模板，列带内每个窗口做 NCC 打分，
-DP 目标 = Σ字形似然 + 高度先验 − 切墨惩罚。模板由 `scripts/build_templates.py` 生成到
-`%LOCALAPPDATA%\yi-segment\glyphbank\templates.npz`；没有模板时自动回退旧的墨量 DP。
-
-> 动态学习（一键学习）已按要求删除。
-## 一键处理精度（2026-11 改进，实测口径）
-
-用 `out/` 里 6 页手工切分结果做基准（`scripts/bench_segmentation.py --from-out`，IoU≥0.5 匹配，6 页平均 F1）：
-
-| 版本 | mean F1（1/4 图，控制变量） |
+| 文档 | 内容 |
 |---|---|
-| 改进前 | 0.8465 |
-| + 两字粘连的行/列谷底补切、污渍过滤、收边界、碎片丢弃 | 0.8789 |
-| + 参数调优（wide_split_ratio 1.70 / tall_split_depth 0.80） | **0.8821** |
+| [docs/CLI.md](docs/CLI.md) | 命令行批量切图参数与断点续跑 |
+| [docs/SPEC.md](docs/SPEC.md) | 数据契约（page.json / boxes.json / index.csv） |
+| [docs/APP.md](docs/APP.md) | 桌面程序使用说明 |
+| [docs/APP-BACKEND.md](docs/APP-BACKEND.md) · [docs/APP-UI.md](docs/APP-UI.md) | 后端 API 与前端交互实现 |
+| [docs/CALIBRATION.md](docs/CALIBRATION.md) | 分割参数与校准 |
+| [docs/prior-art.md](docs/prior-art.md) | 先例调研（切字 / 版面分析 / 字形聚类） |
+| [docs/PROJECT-ENDED.md](docs/PROJECT-ENDED.md) | 项目结束报告（成果清单、指标、清理与重建） |
 
-全分辨率终版：mean F1 0.8768（extra 526 / missed 336）。
+## 数据与许可
 
-已修正的三类问题：
-- **两字粘连**：高框/宽框在墨量谷底切开（不要求空隙），切完两端各自收紧到真实墨迹；
-- **污渍**：凸包填充率高（>0.85）且 ink_frac 大的实心块判为污渍丢掉；
-- **框画大/带上旁边墨点**：每个框只保留主笔画 + 附近足够大的部件，旁边孤立墨点不再撑大边界（错位框 226→98）。
+- 原始扫描件与切图数据集**不在本仓库**（体积与版权原因），程序与算法可完整复现。
+- 印刷规范字库来自《规范彝文单字图形识别手册》，仅作字形比对，随仓库以 base64 文本形式提供。
+- 代码以 [MIT](LICENSE) 许可发布。
 
-复现：
-```
-python scripts/bench_segmentation.py --from-out            # 全分辨率
-python scripts/bench_segmentation.py --from-out --scale 0.25   # 快速迭代
-python scripts/tune_segmentation.py --scale 0.25 --passes 2    # 参数搜索
-```
-## 自建字库（用你切好的单字当模板）
+---
 
-印刷体的《规范彝文》和这本手稿的写法差很多，所以程序还支持**自建字库**：
-
-- 右栏「本页」→「**收录自建字库**」：把这一页的字形收进自建库。
-  - 这一页**框数 ≠ 自动分割结果**（说明你手工改过）→ 收录全部框；
-  - 没改过 → 只收「已确认（绿色）」的框，避免把切错的学进去。
-- 「规范字校验 / 一键处理」时会**自动**把已确认的框顺手收录，越用越像你的笔迹。
-- 校验对照会同时查两套库：每个候选字形下方显示「**本页出现过 N 次**」，来自自建库的卡片带绿框并标「自建」；
-  **分级阈值仍按标准字库标定**，但自建库里若有 ≥0.78 的相似字形，会把「可疑」降级为「一般」。
-- 存储：`%LOCALAPPDATA%\yi-segment\glyphbank\`（user.npz + user_meta.json），删掉该目录即清空自建库。
-
-实测（0003_left，594 个手工框）：收录 594 个字形；随后校验里 **364 框**的最佳匹配来自自建库。
-## 一键学习（在程序里，不用重装）
-
-1. 先在页面上把框改到你满意（增/删/拆/合都行）；
-2. 点顶栏「**一键学习**」→ 确认。程序会把**这一页当前的框**登记为学习样本，然后拿**所有已登记的样本**（最多 8 页）
-   一起重算参数：**是累加，不是覆盖样本**；重复学同一页只更新那一页的样本，不会重复计数。每次约 30–90 秒。
-3. 结束提示「学习完成：累计 N 页，平均 F1 0.xxx」。参数写到
-   `%LOCALAPPDATA%\yi-segment\calibration\segment_params.json`，样本在同目录 `references/` 下；
-4. 之后「一键处理」**立刻**用新参数，**不需要重新打包程序**；设置 → 关于 里能看到当前学习参数，
-   删掉该文件即恢复默认。
-
-> 学习结果是**本机数据**：不进 git、不随安装包分发（仓库只放学习功能本身）。
-> 命令行还能一次给多页学习：`scripts/learn_from_correction.py --pair EXPORT:TIF --pair ...`。
-
-## 关于仓库里的二进制
-
-安装包和 exe **不进 git**（体积太大）：用 `packaging\build.ps1` 在本机生成。
-包内已含 `tools/` 算法源码、`app/static` 前端与 `data/glyphbank` 字库，运行时不依赖仓库路径。
-
-## 环境与依赖
-
-Python 3.10；numpy / opencv-python / scipy / pillow / fastapi / uvicorn /
-pywebview(+pythonnet, 原生窗口)。不需要 GPU、不需要 torch、不需要联网。
-
-## 版本 / 构建时间
-
-窗口标题带版本号（v1.0.1）；「设置 → 关于」里有「版本 1.0.1 · 构建 2026-10-31 16:xx」。
-装完/重启后先看这两处——对不上就说明跑的还是旧程序（关掉旧的窗口/进程，或重装）。
-「本页」信息里还有一行「分列 N 列（已显示/已隐藏分列线）」，可用来判断分列线与分列数据是否就位。
-
-## 常见问题
-
-**安装时提示「已安装过」/ 想换目录**：先卸载旧版（开始菜单 →「卸载 彝文切字工具」），再安装。
-用户数据在 `%LOCALAPPDATA%\yi-segment\`，卸载不会删除。
-
-**启动慢（3–5 秒）**：启动器要加载 286 MB 的 runtime；装到 SSD 会明显快。别把 `runtime\` 目录单独挪走。
-
-**程序一启动就弹 "Unable to configure formatter 'default'"**：窗口模式（`--noconsole`）下
-`sys.stdout/stderr` 是 `None`，而 uvicorn 默认日志配置要写 `sys.stderr`。仓库里 `app/run.py` 已修
-（重定向到 devnull + `log_config=None`），改入口时别改回去。
-
-**画布一片空白、右栏「尺寸 0 × 0」**：预览图缺失/写坏，现在会自动重建（前端失败还会带 `?rebuild=1` 重试），
-也可以点右栏「重新载入」。日志：`%LOCALAPPDATA%\yi-segment\logs\app.log`。
-
-**可疑框很多**：低分只代表「不像标准字形」，连笔、残墨、边界字都会低分。点「下一个低分」看右栏那 3 个
-标准字形：两字粘连按 `S` 拆，碎片 `Del` 删。整页普遍低分多半是扫描倾斜或字迹过淡。
-
-**SmartScreen 拦截**：安装包/程序未签名，选「更多信息 → 仍要运行」。
-
-## 许可证
-
-MIT（见 `LICENSE`）。
+**English** — A complete pipeline for segmenting scanned Yi (Nuosu) manuscript pages into single-glyph
+crops: illumination flattening, Sauvola binarisation, column-band detection, per-column DP cutting with
+template likelihood, a FastAPI + WebView2 review UI with offline glyph-bank checking, a standalone glyph
+library manager, and a batch CLI. Evaluated at **mean F1 0.8768** against hand-drawn boxes on six pages.
+Archived on 2026-11-02 — see [docs/PROJECT-ENDED.md](docs/PROJECT-ENDED.md).
