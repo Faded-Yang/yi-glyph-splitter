@@ -65,6 +65,10 @@ out/<页名>/
 
 ![拼版预览](docs/images/sheet-preview.jpg)
 
+整页叠加图（质检用，绿/红标出可疑框）：
+
+![整页叠加](docs/images/overlay-preview.jpg)
+
 ## 准确率
 
 | 口径 | 结果 |
